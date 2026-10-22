@@ -23,8 +23,11 @@ log() {
 log "install_init 开始"
 
 # ---- 依赖 -------------------------------------------------------------
+# libupnp13 是 gmediarender 的硬依赖（ldd 能看到 libupnp.so.13），
+# alsa-utils 提供 aplay —— 设置页枚举声卡和放测试音都用它。
+# 这两个都不是「顺手带上」的：飞牛本体不一定有，缺了要么起不来，要么设置页声卡列表是空的。
 NEED=""
-for pkg in gstreamer1.0-alsa gstreamer1.0-plugins-base \
+for pkg in libupnp13 alsa-utils gstreamer1.0-alsa gstreamer1.0-plugins-base \
 	gstreamer1.0-plugins-good gstreamer1.0-plugins-ugly; do
 	dpkg -s "$pkg" >/dev/null 2>&1 || NEED="$NEED $pkg"
 done

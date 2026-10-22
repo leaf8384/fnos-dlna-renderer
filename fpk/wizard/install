@@ -4,7 +4,7 @@
     "items": [
       {
         "type": "tips",
-        "helpText": "安装过程会通过 apt 补齐 GStreamer 音频组件（需要联网，约 30MB）。装好后，手机音乐 App 的投屏设备列表里会出现名为 Marshall 的设备，点一下就能把声音推到这台机器接的音箱。"
+        "helpText": "安装过程会通过 apt 补齐运行库（libupnp13、alsa-utils 和 GStreamer 音频组件，需要联网，约 30MB）。装好后，手机音乐 App 的投屏设备列表里会出现名为 Marshall 的设备，点一下就能把声音推到这台机器接的音箱。"
       },
       {
         "type": "tips",

@@ -21,9 +21,9 @@
       **结论：应用化里"改广播名"功能就是改配置 + 重启，工作量不翻倍。**
       坑：`--dump-devicedesc` 不是纯本地操作，它仍要初始化 UPnP 抢 49494 端口，测试必须带 `-p <空闲端口>`。
 
-- [ ] **给 `description.xml` 补 `dlna:X_DLNADOC`**（改一行 + 重编）
+- [ ] **给设备描述补 `dlna:X_DLNADOC`**（改 C 源码 + 重编）
       对照 MiCast-Go 的实现，它写了 `<dlna:X_DLNADOC>DMR-1.50</dlna:X_DLNADOC>`，我们上游没有（已 grep 确认）。这是"某些国产 App 搜不到设备"的可疑原因，补上就能验证。
-      改的是 `src/device-desc.xml`，configure 时被打进二进制，必须重新编译，不能运行时替换。
+      **注意：没有 `src/device-desc.xml` 这个文件**（2026-10-23 复核 vendor 源码，`find` 无此文件）。设备描述是 `upnp_device.c` 里 `generate_desc()` **在 C 里拼出来的**，要改两处：① root 元素加 `xmlns:dlna="urn:schemas-dlna-org:device-1-0"`；② device 元素下插 `<dlna:X_DLNADOC>DMR-1.50</dlna:X_DLNADOC>`。然后重编、重打包 fpk。
 
 ## P1 · 单页控制台 · **已完成（v1.1.0，2026-10-23）**
 
@@ -93,6 +93,21 @@
 - [x] **应用中心库里补登记**：列表存在 **postgres `appcenter` 库**（`app_service` / `app_open` / `app_poster`），不是扫目录；手工铺文件不会自动写库。重启 `trim_app_center` 会把**所有应用**重启一遍（约 20 秒）
 
 
+## 重启验证清单
+
+> 目前**唯一必须重启才能验**的是直通 ① 层（`vfio-pci.ids` 至今没生效过，改完后没重启过）；顺带把「开机自启机制未查清」那条一并确认。
+
+**重启前**
+- [ ] 确认重要数据有独立备份（阵列无 parity、disk2 已用 93%）
+- [ ] 直通四层原件在本地：`Unraid/configs/passthrough-2026-10-23/raw.txt`（U 盘挂了照它恢复）
+
+**重启后**
+- [ ] `bash scripts/check-passthrough.sh` → ①b 从 WARN 变 PASS，④ 三个设备仍是 `vfio-pci`
+- [ ] fnOS 内 `cat /proc/asound/cards` 仍有 `PCH`；手机投屏列表能搜到「肥牛」
+- [ ] 渲染器自动起来了（不确定是谁拉起的，正好这次确认）且音量是记忆值、不是满音量
+- [ ] 应用中心显示「运行中」，`http://192.168.3.250:8790` 能打开、播放控制正常
+- [ ] 若没自动起来 → 顺着技术债「开机自启机制未查清」查（`trim_app_cgi` 曾显示 `disabled`）
+
 ## 技术债 / 遗留
 
 - [x] ~~推 GitHub~~ —— 已上 `github.com/leaf8384/fnos-dlna-renderer`，v1.0.0 已发布，CI 用 `debian:12` 容器编译（40 秒通过）
@@ -101,7 +116,7 @@
 - [x] ~~`-I` 写死在配置里，换网卡/改枚举后进程 running 但手机搜不到~~ —— 1.1.0 起可在设置界面直接改网卡，「改完重启」由 `cmd/main` 统一处理
 - [ ] 跨 Debian 大版本升级后 `libupnp.so.13` SONAME 变化会导致 `error while loading shared libraries`
 - [ ] **开机自启机制未查清**：`manifest` 里没有相关字段，`trim_app_cgi` 查 `dlna-renderer` 显示 `disabled`，但官方应用重启后都能自己起来。目前重启后渲染器确实在跑（实测），但**不清楚是谁拉起来的**，将来若出现「重启后不自动广播」需要从这里查。
-- [ ] `description.xml` 缺 `dlna:X_DLNADOC`（P0 遗留），要在 `src/device-desc.xml` 里加并**重新编译**，不能运行时替换。当前网易云可用，先不动。
+- [ ] `description.xml` 缺 `dlna:X_DLNADOC`（P0 遗留），要改 `upnp_device.c` 的 `generate_desc()` 并**重新编译**（仓库里没有 `src/device-desc.xml`，别去找）。当前网易云可用，先不动。
 - [ ] **应用中心「更新」流程未实测**：`appcenter-cli` 的 `install-fpk` 遇到已装应用直接回 `is installed`、一个文件都不覆盖，`uninstall` 又要求走 Web UI，所以只能从应用中心界面点「更新」验证真实升级路径。另外 `appcenter-cli list` 里的版本号存在飞牛自己的库里，改 `manifest` 不会让它变。
 
 ## 未决策

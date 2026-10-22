@@ -126,6 +126,11 @@ $ ps -o pid,args -p 27936
 ```
 
 - `install.log`：`依赖已满足` → `已生成默认配置` → `install_callback 完成`
+- 依赖清单（`cmd/install_init` 里缺什么补什么，装过的不重复装）：
+  **`libupnp13`、`alsa-utils`、`gstreamer1.0-{alsa,plugins-base,plugins-good,plugins-ugly}`**
+  - `libupnp13` 是 `gmediarender` 的硬依赖，`ldd` 能直接看到 `libupnp.so.13`；缺了进程起不来
+  - `alsa-utils` 提供 `aplay`：设置页的声卡下拉和「测试音」都靠它，缺了声卡列表是空的
+  - **卸载不会回滚这几个包**（飞牛只删应用目录和库记录），卸载向导里已经明说了
 - `control.log`：`启动：iface=enp5s0 name=Marshall audio=plughw:CARD=PCH,DEV=0` / `已启动 (pid 27936)`
 - `renderer.log` error / fatal / cannot / failed 计数 **0**
 - SSDP：`0.0.0.0:1900` 与 `[::]:1900` 均 UNCONN 监听

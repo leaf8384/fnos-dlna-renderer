@@ -82,6 +82,8 @@
   }
 
   /* ---- 正在播放 ---- */
+  /* 窗口被拉高时，把播放区整体垂直居中，避免全挤在顶部留一大片白 */
+  .player-body { margin: auto 0; }
   .now-title {
     font-size: 16.5px; font-weight: 600; line-height: 1.35;
     margin: 0 0 3px;
@@ -163,6 +165,7 @@
   .vol .pct { font-size: 11.5px; width: 26px; text-align: right; font-variant-numeric: tabular-nums; }
 
   /* ---- 设置 ---- */
+  .settings-body { margin: auto 0; }
   .field { margin-bottom: 11px; flex: none; }
   .field label {
     display: block; font-size: 12px; color: var(--text-3);
@@ -179,7 +182,7 @@
     border-color: var(--brand); background: #fff;
     box-shadow: 0 0 0 3px rgba(71,120,255,.12);
   }
-  .actions { display: flex; gap: 8px; margin-top: auto; padding-top: 6px; flex: none; }
+  .actions { display: flex; gap: 8px; margin-top: 4px; padding-top: 2px; flex: none; }
   button.btn {
     flex: 1; padding: 9px 14px; border-radius: 9px;
     border: 1px solid var(--line); background: #fff;
@@ -246,6 +249,7 @@
   <!-- 左：正在播放 -->
   <section class="card">
     <h2>正在播放</h2>
+    <div class="player-body">
     <div class="now-title idle" id="title">未在播放</div>
     <div class="now-sub" id="artist">用手机音乐 App 投屏到这台设备</div>
 
@@ -273,11 +277,13 @@
         <span class="pct" id="volpct">--</span>
       </div>
     </div>
+    </div>
   </section>
 
   <!-- 右：设备设置 -->
   <section class="card">
     <h2>设备设置</h2>
+    <div class="settings-body">
     <div class="field">
       <label for="name">广播名（手机上显示的名字）</label>
       <input type="text" id="name" maxlength="32" placeholder="例如：客厅音箱">
@@ -293,6 +299,7 @@
     <div class="actions">
       <button class="btn" id="btnTone">测试音</button>
       <button class="btn primary" id="btnSave">保存并重启</button>
+    </div>
     </div>
   </section>
 </main>
@@ -393,13 +400,22 @@
   function renderNow(n) {
     var playing = n.state === 'PLAYING';
     var paused = n.state === 'PAUSED_PLAYBACK' || n.state === 'PAUSED';
-    var active = playing || paused;
 
-    if (!n.running || (!active && !n.title)) {
-      setNowIdle(n.running ? '未在播放' : '渲染器已停止');
-      if (n.running) {
-        $('btnToggle').disabled = false;   // 停止态也能按播放（有 URI 才会生效）
-      }
+    if (!n.running) {
+      setNowIdle('渲染器已停止');
+      return;
+    }
+    // 渲染器会停在「PLAYING 但没有曲目」的僵尸态（EOS 后客户端又补了一个 Play），
+    // 这时不能继续显示上一首，否则进度归零但曲名还在，很误导。
+    if (!n.has_media) {
+      setNowIdle('未在播放');
+      $('btnToggle').disabled = false;
+      return;
+    }
+    var active = playing || paused;
+    if (!active) {
+      setNowIdle('已停止');
+      $('btnToggle').disabled = false;
       return;
     }
 

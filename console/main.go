@@ -587,6 +587,8 @@ type nowResp struct {
 	Position  int    `json:"position"`
 	Volume    int    `json:"volume"`
 	HasVolume bool   `json:"has_volume"`
+	HasMedia  bool   `json:"has_media"`
+	URI       string `json:"uri"`
 	Error     string `json:"error,omitempty"`
 }
 
@@ -612,6 +614,8 @@ func nowPlaying(p paths) nowResp {
 	// 曲名/艺人只能从 GetMediaInfo 拿 —— gmediarender 的 GetPositionInfo
 	// 根本不返回 CurrentTrackMetaData（实测响应里整段缺失，不是空值）。
 	if media, err := soapCall(host, ctrlTransport, nsTransport, "GetMediaInfo", ""); err == nil {
+		res.URI = tagValue(media, "CurrentURI")
+		res.HasMedia = res.URI != ""
 		meta := tagValue(media, "CurrentURIMetaData")
 		if meta != "" {
 			res.Title = tagValue(meta, "dc:title")

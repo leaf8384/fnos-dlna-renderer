@@ -1,6 +1,6 @@
 # 未来计划
 
-> 记录于 2026-10-22，更新于 2026-10-23。当前版本 **1.1.0**（1.0.0 稳定运行；1.0.1 修中文设备名；1.1.0 新增网页设置界面），**暂无必须做的事**，以下按优先级排列，做到哪算哪。
+> 记录于 2026-10-22，更新于 2026-10-23。当前版本 **1.1.1**（1.0.0 稳定运行；1.0.1 修中文设备名；1.1.0 网页设置界面；1.1.1 播放控制 + 桌面入口），**暂无必须做的事**，以下按优先级排列，做到哪算哪。
 > 应用化设计的完整方案见 [`docs/app-console-plan.md`](app-console-plan.md)。
 
 ## P0 · 待验证（决定后续路线，30 分钟）
@@ -66,6 +66,26 @@
 代价要说清楚：**应用停用后连配置页都进不去**，要改配置得先启用。接受这个代价，换来少一个状态要维护（不用再记 `ENABLED=0`，也不用担心应用重启后自己恢复广播）。
 
 
+## P2 · 播放控制与桌面入口 · **已完成（v1.1.1，2026-10-23）**
+
+- [x] **`/api/now`**：一次拿全 `state / title / artist / album / duration / position / volume / has_media / uri`
+      - **控制地址不是标准的 `AVTransport1`**：gmediarender 是 `/upnp/control/rendertransport1`、`/upnp/control/rendercontrol1`，连错一律 404
+      - **`GetPositionInfo` 不返回 `CurrentTrackMetaData`**（实测响应里整段缺失，不是空值）→ 曲名/艺人只能从 `GetMediaInfo` 的 `CurrentURIMetaData` 取
+      - 元数据是**双重转义**的 XML（`&lt;dc:title&gt;` 里面还有实体），要反转义两次再 `tagValue`
+      - 网易云只写 `dc:creator`，`upnp:artist` 常为空 → 两级回退
+- [x] **`/api/control`**：`play / pause / stop / seek / volume`，前端只传动作名和一个数字，SOAP 参数**全部由后端拼**
+      - `seek` 校验 `0..86400`、`volume` 校验 `0..100`，越界与未知动作都回 `400`
+- [x] **僵尸态处理**：EOS 会把 URI 清空，客户端随后补发一个 `Play`，渲染器允许 `STOPPED → PLAYING`（URI 仍为空）
+      → 后端返回 `has_media`，前端 `has_media=false` 直接显示「未在播放」，不再拿上一首的曲名配零进度
+- [x] **固定布局**：`html,body{height:100%}` + `overflow:hidden`，两栏 grid，播放卡与设置卡各自 `margin:auto 0` 垂直居中；`max-width:720px` / `max-height:560px` 两档媒体查询兜底
+- [x] **桌面入口**：`fpk/app_ui/{config,images}` → 打包进 `app/ui`
+      - `config` 里 `"type":"iframe"` 才能内嵌窗口；`icon` 写 `images/icon_{0}.png`（`{0}` 在飞牛自己的资源里是**字面量**，别当占位符）
+      - `manifest` 必须同时有 `desktop_uidir = ui` 和 `desktop_applaunchname`
+      - **第三方应用永远拿不到 `inbuilt`**（前端 `nativeApp: e.type === 'inbuilt'`，那是内置应用专用）→ 改 `app.native_app` 没用，正路只有 `app_service.type='iframe'` + `ui/`
+      - 图标用 Pillow 从 256 原图重采样出 16/24/32/48/64/72/96/128/256 全套
+- [x] **应用中心库里补登记**：列表存在 **postgres `appcenter` 库**（`app_service` / `app_open` / `app_poster`），不是扫目录；手工铺文件不会自动写库。重启 `trim_app_center` 会把**所有应用**重启一遍（约 20 秒）
+
+
 ## 技术债 / 遗留
 
 - [x] ~~推 GitHub~~ —— 已上 `github.com/leaf8384/fnos-dlna-renderer`，v1.0.0 已发布，CI 用 `debian:12` 容器编译（40 秒通过）
@@ -75,10 +95,12 @@
 - [ ] 跨 Debian 大版本升级后 `libupnp.so.13` SONAME 变化会导致 `error while loading shared libraries`
 - [ ] **开机自启机制未查清**：`manifest` 里没有相关字段，`trim_app_cgi` 查 `dlna-renderer` 显示 `disabled`，但官方应用重启后都能自己起来。目前重启后渲染器确实在跑（实测），但**不清楚是谁拉起来的**，将来若出现「重启后不自动广播」需要从这里查。
 - [ ] `description.xml` 缺 `dlna:X_DLNADOC`（P0 遗留），要在 `src/device-desc.xml` 里加并**重新编译**，不能运行时替换。当前网易云可用，先不动。
+- [ ] **应用中心「更新」流程未实测**：`appcenter-cli` 的 `install-fpk` 遇到已装应用直接回 `is installed`、一个文件都不覆盖，`uninstall` 又要求走 Web UI，所以只能从应用中心界面点「更新」验证真实升级路径。另外 `appcenter-cli list` 里的版本号存在飞牛自己的库里，改 `manifest` 不会让它变。
 
 ## 未决策
 
 - Marshall Acton II 待机 20 分钟后能否被 AUX/DLNA 唤醒。官方只对 III 代承诺。唤不醒的话要么加静音保活流，要么接受手动开机。
+- **「手机切回本机播放，NAS 还在响」要不要兜底**。抓包证明网易云切走时**一个包都不发**（没有 `Stop` 也没有 `Pause`），这是 DLNA 投屏的固有模型——纯音频渲染器没有会话回收机制，只能继续拉到流结束。可选方案：① 什么都不做，用设置页的「停止」按钮手工停（已可用）；② 长时间没收到任何 UPnP 指令且无进度变化就自动 `Stop`。②有误杀风险（用户就是想让它放完），暂未采用。
 
 ## 明确不做
 

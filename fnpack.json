@@ -29,9 +29,9 @@
           "os_min_version": "1.0.0",
           "packages": {
             "x86": {
-              "download_url": "./dist/dlna-renderer_v1.0.1_x86.fpk",
-              "sha256": "0000000000000000000000000000000000000000000000000000000000000000",
-              "size": 0
+              "download_url": "https://github.com/leaf8384/fnos-dlna-renderer/releases/download/v1.0.1/dlna-renderer_v1.0.1_x86.fpk",
+              "sha256": "2667fec001ce27b4437fae006de966a0d355475dcdf0ae40ec10cff9e515619d",
+              "size": 171453
             }
           }
         },
@@ -41,7 +41,7 @@
           "os_min_version": "1.0.0",
           "packages": {
             "x86": {
-              "download_url": "./dist/dlna-renderer_v1.0.0_x86.fpk",
+              "download_url": "https://github.com/leaf8384/fnos-dlna-renderer/releases/download/v1.0.0/dlna-renderer_v1.0.0_x86.fpk",
               "sha256": "e5e41900d1778f9f4a7f42f89f7c820a203f490345f77368e57fdcc5aa3dafab",
               "size": 170602
             }

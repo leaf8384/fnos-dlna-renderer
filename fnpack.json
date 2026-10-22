@@ -23,6 +23,18 @@
       "is_docker": false,
       "service_port": "8790",
       "releases": {
+        "1.1.3": {
+          "changelog": "修安装脚本漏装的运行库：libupnp13（gmediarender 硬依赖，缺了进程起不来）和 alsa-utils（设置页声卡列表与测试音要用 aplay）。之前只补 GStreamer 插件包，在开发机上这两样是手工装过的，干净机器上会装得上却起不来。",
+          "updated_at": "2026-10-23T01:28:00+08:00",
+          "os_min_version": "1.0.0",
+          "packages": {
+            "x86": {
+              "download_url": "./dist/dlna-renderer_v1.1.3_x86.fpk",
+              "sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+              "size": 0
+            }
+          }
+        },
         "1.1.2": {
           "changelog": "去掉页面里重复的标题：飞牛的「打开」是带标题栏的内嵌窗口，应用名和图标已经在标题栏上，页面里不再重复画一遍，运行状态挪到「设备设置」标题行右侧。补齐服务图标声明，修窗口标题栏图标空白（原来 app_service.icon 为空，/app-center-static/serviceicon/ 请求 404）。",
           "updated_at": "2026-10-23T01:20:00+08:00",

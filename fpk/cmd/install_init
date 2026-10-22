@@ -1,0 +1,74 @@
+#!/bin/bash
+# 安装前：补齐 GStreamer 运行库，生成默认配置
+#
+# 依赖故意不写进 manifest 的依赖字段，而是在这里按需 apt 安装：
+# 飞牛本体就是 Debian，宿主已有大部分 GStreamer 组件，重复装一遍最省事。
+
+set -u
+
+APPNAME="dlna-renderer"
+
+: "${TRIM_PKGVAR:=/vol1/@appdata/${APPNAME}}"
+
+VAR="${TRIM_PKGVAR}"
+CONF="${VAR}/renderer.conf"
+LOG="${VAR}/install.log"
+
+mkdir -p "$VAR" 2>/dev/null
+
+log() {
+	printf '[%s] %s\n' "$(date '+%F %T')" "$*" >>"$LOG" 2>/dev/null
+}
+
+log "install_init 开始"
+
+# ---- 依赖 -------------------------------------------------------------
+NEED=""
+for pkg in gstreamer1.0-alsa gstreamer1.0-plugins-base \
+	gstreamer1.0-plugins-good gstreamer1.0-plugins-ugly; do
+	dpkg -s "$pkg" >/dev/null 2>&1 || NEED="$NEED $pkg"
+done
+
+if [ -n "$NEED" ]; then
+	log "缺少依赖:$NEED，开始安装"
+	export DEBIAN_FRONTEND=noninteractive
+	apt-get update -qq >>"$LOG" 2>&1 || log "apt-get update 失败，仍尝试安装"
+	if apt-get install -y -qq $NEED >>"$LOG" 2>&1; then
+		log "依赖安装完成"
+	else
+		log "依赖安装失败。应用能装上但可能没有声音，请手动执行:"
+		log "  apt install$NEED"
+	fi
+else
+	log "依赖已满足"
+fi
+
+# ---- 默认配置 ---------------------------------------------------------
+if [ ! -f "$CONF" ]; then
+	IFACE=$(ip -4 route show default 2>/dev/null |
+		awk '{ for (n = 1; n <= NF; n++) if ($n == "dev") { print $(n + 1); exit } }')
+	CARD=$(aplay -l 2>/dev/null | sed -n 's/^card [0-9]*: \([^ ]*\) \[.*/\1/p' | head -1)
+
+	cat >"$CONF" <<EOF
+# dlna-renderer 配置
+# 改完生效：\$TRIM_APPDEST/../cmd/main stop && cmd/main start
+# 也可以直接在应用中心里停用再启用。
+
+# 手机投屏列表里显示的名字
+FRIENDLY_NAME=Marshall
+
+# 绑定网卡。留空则自动探测默认路由出口网卡。
+# 多网卡或改了网络之后如果手机搜不到设备，先来这里确认。
+IFACE=${IFACE}
+
+# ALSA 输出设备。留空则自动取第一块声卡。
+# 查询可用设备：aplay -L | grep plughw
+AUDIODEV=plughw:CARD=${CARD:-PCH},DEV=0
+EOF
+	log "已生成默认配置 $CONF（网卡=${IFACE:-自动} 声卡=${CARD:-自动}）"
+else
+	log "配置已存在，保留不动"
+fi
+
+log "install_init 结束"
+exit 0

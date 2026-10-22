@@ -1,0 +1,55 @@
+name: build-fpk
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    # 构建机 glibc 必须不高于目标机。Ubuntu 22.04 是 2.35，
+    # Debian 12 (fnOS 底座) 是 2.36，所以这里编出来的包能在 fnOS 上跑。
+    runs-on: ubuntu-22.04
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 安装构建依赖
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential autoconf automake libtool pkg-config \
+            libupnp-dev libgstreamer1.0-dev
+
+      - name: 校验 fnpack.json
+        run: python3 -c "import json,sys; json.load(open('fnpack.json')); print('fnpack.json 合法')"
+
+      - name: 构建
+        run: bash scripts/build.sh
+
+      - name: 打包 fpk
+        run: bash scripts/package-fpk.sh
+
+      - name: 回填 fnpack.json
+        run: |
+          python3 scripts/update-fnpack.py \
+            --url "https://github.com/${{ github.repository }}/releases/download/${{ github.ref_name }}/$(ls dist | head -1)"
+
+      - name: 上传构建产物
+        uses: actions/upload-artifact@v4
+        with:
+          name: fpk-${{ github.sha }}
+          path: dist/*.fpk
+
+      - name: 发布 Release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/*.fpk
+            fnpack.json
+          generate_release_notes: true

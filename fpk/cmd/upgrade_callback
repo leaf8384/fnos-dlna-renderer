@@ -1,0 +1,13 @@
+#!/bin/bash
+# 升级后：把新版本拉起来。
+# 飞牛通常在升级流程末尾也会调用 start，这里启动一次是幂等的（已在跑就直接返回）。
+
+set -u
+
+CMD_DIR="$(cd "$(dirname "$0")" && pwd)"
+
+if [ -x "${CMD_DIR}/main" ]; then
+	"${CMD_DIR}/main" start
+fi
+
+exit 0

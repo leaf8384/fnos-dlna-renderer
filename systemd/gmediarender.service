@@ -1,0 +1,27 @@
+[Unit]
+Description=DLNA/UPnP media renderer (gmediarender, patched)
+Documentation=man:gmediarender(1)
+After=network-online.target sound.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+
+# 网卡名、设备显示名、ALSA 设备都在这里配置
+EnvironmentFile=-/etc/default/dlna-renderer
+
+# 音量存档目录，供 GMR_VOLUME_STATE 落盘
+StateDirectory=gmediarender
+
+# 声卡尚未被占用时恢复混音器状态，失败不阻塞启动
+ExecStartPre=-/usr/sbin/alsactl restore 0
+
+ExecStart=/usr/local/bin/gmediarender -I ${IFACE} -f "${FRIENDLY_NAME}" --gstout-audiosink=alsasink --gstout-audiodevice=${AUDIODEV} --logfile=stdout
+
+Restart=always
+RestartSec=3
+TimeoutStopSec=5
+
+[Install]
+WantedBy=multi-user.target

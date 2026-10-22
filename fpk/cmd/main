@@ -1,0 +1,156 @@
+#!/bin/bash
+# dlna-renderer —— 生命周期控制
+#
+# 飞牛的调用约定：
+#   cmd/main start    成功 exit 0，失败 exit 1
+#   cmd/main stop     成功 exit 0，失败 exit 1
+#   cmd/main status   运行中 exit 0，未运行 exit 3
+#
+# 飞牛不用 systemd 管理第三方应用，所以这里自己拉起后台进程并维护 pid。
+
+set -u
+
+APPNAME="dlna-renderer"
+
+# 飞牛正常会注入 TRIM_*，这里补兜底值，方便脱离应用中心手动调试
+: "${TRIM_APPDEST:=/var/apps/${APPNAME}/target}"
+: "${TRIM_PKGVAR:=/vol1/@appdata/${APPNAME}}"
+
+VAR="${TRIM_PKGVAR}"
+BIN="${TRIM_APPDEST}/gmediarender"
+CONF="${VAR}/renderer.conf"
+PIDFILE="${VAR}/pid"
+LOGFILE="${VAR}/renderer.log"
+CTLLOG="${VAR}/control.log"
+VOLSTATE="${VAR}/volume.state"
+
+mkdir -p "$VAR" 2>/dev/null
+
+log() {
+	printf '[%s] %s\n' "$(date '+%F %T')" "$*" >> "$CTLLOG" 2>/dev/null
+}
+
+# ---- 自动探测 ---------------------------------------------------------
+# 渲染器必须绑到能收到 SSDP 组播的网卡，绑错了手机就发现不了设备。
+detect_iface() {
+	local i
+	i=$(ip -4 route show default 2>/dev/null |
+		awk '{ for (n = 1; n <= NF; n++) if ($n == "dev") { print $(n + 1); exit } }')
+	if [ -z "$i" ]; then
+		i=$(ip -4 route get 223.5.5.5 2>/dev/null |
+			awk '{ for (n = 1; n <= NF; n++) if ($n == "dev") { print $(n + 1); exit } }')
+	fi
+	printf '%s' "${i:-enp5s0}"
+}
+
+# 用声卡名字而不是序号：重启后 card 编号会变，名字不会
+detect_audiodev() {
+	local name
+	name=$(aplay -l 2>/dev/null | sed -n 's/^card [0-9]*: \([^ ]*\) \[.*/\1/p' | head -1)
+	printf 'plughw:CARD=%s,DEV=0' "${name:-PCH}"
+}
+
+load_conf() {
+	IFACE=""
+	AUDIODEV=""
+	FRIENDLY_NAME="Marshall"
+	if [ -f "$CONF" ]; then
+		. "$CONF"
+	fi
+	[ -z "$IFACE" ] && IFACE="$(detect_iface)"
+	[ -z "$AUDIODEV" ] && AUDIODEV="$(detect_audiodev)"
+	[ -z "$FRIENDLY_NAME" ] && FRIENDLY_NAME="Marshall"
+}
+
+pid_of() {
+	local p
+	[ -f "$PIDFILE" ] || return 1
+	p=$(cat "$PIDFILE" 2>/dev/null)
+	[ -n "$p" ] || return 1
+	printf '%s' "$p"
+}
+
+is_running() {
+	local p
+	p=$(pid_of) || return 1
+	kill -0 "$p" 2>/dev/null
+}
+
+# ---- 动作 -------------------------------------------------------------
+do_start() {
+	if is_running; then
+		log "已在运行 (pid $(pid_of))"
+		return 0
+	fi
+
+	if [ ! -x "$BIN" ]; then
+		log "启动失败：$BIN 不存在或不可执行"
+		return 1
+	fi
+
+	load_conf
+	log "启动：iface=$IFACE name=$FRIENDLY_NAME audio=$AUDIODEV"
+
+	# 音量存档放数据卷，卸载应用时跟着目录一起清掉，不残留到系统分区
+	export GMR_VOLUME_STATE="$VOLSTATE"
+
+	cd "$VAR" || return 1
+	nohup "$BIN" \
+		-I "$IFACE" \
+		-f "$FRIENDLY_NAME" \
+		--gstout-audiosink=alsasink \
+		--gstout-audiodevice="$AUDIODEV" \
+		--logfile=stdout \
+		>>"$LOGFILE" 2>&1 &
+	printf '%s' "$!" >"$PIDFILE"
+
+	sleep 1
+	if is_running; then
+		log "已启动 (pid $(pid_of))"
+		return 0
+	fi
+
+	log "启动失败：进程立即退出，日志尾部如下"
+	tail -n 20 "$LOGFILE" >>"$CTLLOG" 2>/dev/null
+	rm -f "$PIDFILE"
+	return 1
+}
+
+do_stop() {
+	local p n
+	if ! p=$(pid_of); then
+		rm -f "$PIDFILE"
+		log "未在运行"
+		return 0
+	fi
+
+	log "停止 pid $p"
+	kill "$p" 2>/dev/null
+	for n in $(seq 1 50); do
+		kill -0 "$p" 2>/dev/null || break
+		sleep 0.1
+	done
+	if kill -0 "$p" 2>/dev/null; then
+		log "超时未退出，强制结束 pid $p"
+		kill -9 "$p" 2>/dev/null
+		sleep 0.2
+	fi
+	rm -f "$PIDFILE"
+	return 0
+}
+
+case "${1:-}" in
+start) do_start ;;
+stop) do_stop ;;
+status)
+	if is_running; then
+		exit 0
+	else
+		exit 3
+	fi
+	;;
+*)
+	echo "用法: $0 {start|stop|status}" >&2
+	exit 1
+	;;
+esac

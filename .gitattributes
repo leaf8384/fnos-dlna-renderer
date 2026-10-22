@@ -1,0 +1,9 @@
+# 仓库里大量是 shell 脚本和 INI/JSON，换行一旦被转成 CRLF，
+# 在 Linux 上执行会报 "$'\r': command not found" 或者 JSON 解析失败。
+* text=auto eol=lf
+
+# 二进制资产不能被当文本处理
+*.PNG binary
+*.gz binary
+*.fpk binary
+*.patch -text

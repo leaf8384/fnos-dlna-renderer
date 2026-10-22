@@ -1,0 +1,12 @@
+#!/bin/bash
+# 卸载后：清理 pid 残留。
+# 配置、音量存档和日志都在 TRIM_PKGVAR 下，飞牛会连同目录一起删除，不用管。
+
+set -u
+
+APPNAME="dlna-renderer"
+: "${TRIM_PKGVAR:=/vol1/@appdata/${APPNAME}}"
+
+rm -f "${TRIM_PKGVAR}/pid" 2>/dev/null
+
+exit 0

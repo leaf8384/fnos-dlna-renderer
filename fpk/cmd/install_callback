@@ -1,0 +1,9 @@
+#!/bin/bash
+# 安装后：飞牛会自动调用 cmd/main start，这里不需要额外动作。
+# 保留这个文件是因为 manifest 没有显式声明时，飞牛仍会按约定尝试调用。
+
+APPNAME="dlna-renderer"
+: "${TRIM_PKGVAR:=/vol1/@appdata/${APPNAME}}"
+
+printf '[%s] install_callback 完成\n' "$(date '+%F %T')" >>"${TRIM_PKGVAR}/install.log" 2>/dev/null
+exit 0

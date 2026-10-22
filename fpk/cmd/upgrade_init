@@ -1,0 +1,12 @@
+#!/bin/bash
+# 升级前：停掉旧进程，避免旧二进制继续占着声卡和 pid 文件
+
+set -u
+
+CMD_DIR="$(cd "$(dirname "$0")" && pwd)"
+
+if [ -x "${CMD_DIR}/main" ]; then
+	"${CMD_DIR}/main" stop
+fi
+
+exit 0

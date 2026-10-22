@@ -1,0 +1,12 @@
+#!/bin/bash
+# 卸载前：先把渲染器进程停掉，否则二进制被删时进程还在跑
+
+set -u
+
+CMD_DIR="$(cd "$(dirname "$0")" && pwd)"
+
+if [ -x "${CMD_DIR}/main" ]; then
+	"${CMD_DIR}/main" stop
+fi
+
+exit 0

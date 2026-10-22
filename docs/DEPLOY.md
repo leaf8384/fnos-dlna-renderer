@@ -94,7 +94,11 @@ fpk 版同理，改 `renderer.conf` 后到应用中心停用再启用。
 
 ## FPK 真装验证记录（2026-10-22）
 
-不是"应该能跑"，是实际装上跑通了。留档备查：
+不是"应该能跑"，是实际装上跑通了。留档备查。
+
+> 下面这段是 1.0.0 首装时的原始记录。1.0.1 用同样流程验证过：
+> 包内 manifest 1.0.1、`cmd/main` 带 locale 修复，铺进安装目录后 `running`、
+> `<friendlyName>Marshall</friendlyName>` 正常、切歌回归三轮全过、renderer.log 零 error。
 
 ```
 $ appcenter-cli install-fpk dist/dlna-renderer_v1.0.0_x86.fpk -v 1
@@ -126,6 +130,50 @@ $ ps -o pid,args -p 27936
 
 - `appcenter-cli start` 偶尔报 `[Error]Something wrong with appcenter: code 10500`，但应用实际已经 `starting → running`，进程正常。属 CLI 误报，不用管。
 - `volume.state` 新建时是 `60`，装完播放过后变 `90`（手机端调过），说明 `GMR_VOLUME_STATE` 环境变量重定向生效，存档落在 `@appdata` 而不是 `/var/lib`。
+
+## 升级 / 换版本（有坑）
+
+**`appcenter-cli` 既不能升级也不能卸载已安装的应用**，试过：
+
+```
+$ appcenter-cli install-fpk -v 1 dlna-renderer_v1.0.1_x86.fpk
+[Info]Application [dlna-renderer] is installed.      # 什么都不做，文件时间戳没变
+
+$ appcenter-cli uninstall dlna-renderer
+[Error]Failed to uninstall dlna-renderer, please uninstall it from Web UI.
+```
+
+它连 `upgrade` 子命令都没有（只有 install / uninstall / start / stop / check / status / list）。
+**升级和卸载只能走 Web UI**（应用中心里点「更新」或「卸载」）。
+
+另外版本号和运行状态**记在飞牛自己的库里，不是读 `/var/apps/<app>/manifest`**：
+手工改 manifest 的 `version`，`appcenter-cli list` 仍然报旧版本。所以别指望改文件骗过显示。
+
+不想动 Web UI 时，可以手工把新包内容铺进安装目录（等价于完成升级，但飞牛库里版本号不变，
+下次从 Web UI 装新版时它仍会认为需要升级，正好走真正的 upgrade 流程）：
+
+```bash
+# 1. 解包
+P=/tmp/newpkg; rm -rf $P; mkdir -p $P/app
+tar xzf dlna-renderer_vX.Y.Z_x86.fpk -C $P
+tar xzf $P/app.tgz -C $P/app
+
+# 2. 停（用 cmd/main，别用 appcenter-cli，避免状态机错乱）
+sudo /var/apps/dlna-renderer/cmd/main stop
+
+# 3. 铺文件
+sudo cp -a $P/manifest $P/cmd $P/config $P/wizard $P/ICON*.PNG /var/apps/dlna-renderer/
+sudo chmod 755 /var/apps/dlna-renderer/cmd/*
+sudo cp -a $P/app/gmediarender /vol1/@appcenter/dlna-renderer/gmediarender
+
+# 4. 让应用中心的状态机与实际一致
+sudo appcenter-cli stop dlna-renderer
+sudo appcenter-cli start dlna-renderer
+sudo appcenter-cli status dlna-renderer     # → running
+```
+
+**卸载会连 `/vol1/@appdata/dlna-renderer`（配置 + 音量存档 + 日志）一起删掉**，
+真要走 Web UI 卸载前先 `sudo cp -a /vol1/@appdata/dlna-renderer /vol1/@appdata/dlna-renderer.backup`。
 
 ## 回退
 

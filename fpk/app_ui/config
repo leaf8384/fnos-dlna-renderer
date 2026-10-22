@@ -1,16 +1,14 @@
 {
     ".url": {
         "dlna-renderer": {
-            "title": "${entry.title}",
-            "desc": "${entry.desc}",
+            "title": "DLNA 音频桥",
+            "desc": "设置界面：改广播名 / 声卡 / 网卡，控制播放",
             "icon": "images/icon_{0}.png",
             "type": "iframe",
             "protocol": "http",
-            "url": ":8790/",
+            "port": 8790,
+            "url": "/",
             "allUsers": true
         }
     }
 }
-[entry]
-title=DLNA 音频桥
-desc=设置界面：改广播名 / 声卡 / 网卡，控制播放

@@ -55,6 +55,7 @@ sudo bash scripts/install-standalone.sh
 它会装二进制到 `/usr/local/bin`、写 `/etc/default/dlna-renderer`、装 systemd 服务并启动。
 
 > 两种方式互斥。已经用 fpk 装了就别再跑脚本版，否则两个进程会抢同一块声卡。
+> 当前生产环境走的是**方式一（FPK）**，方式二仅作为应急回退保留。
 
 ## 配置
 

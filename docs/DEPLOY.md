@@ -17,9 +17,24 @@
 
 音箱是 Marshall Acton II，走 3.5mm AUX 接 fnOS 虚拟机的模拟输出。
 
-旧的 systemd 裸装仍在机器上（`gmediarender.service` 已 `disabled` + `inactive`），
-但二进制留在 `/usr/local/bin/gmediarender`，音量存档留在 `/var/lib/gmediarender/`。
-**两套不能同时跑**（抢同一块声卡），当前以 FPK 为准。
+**旧的部署方式已于 2026-10-23 彻底清理**，机器上现在只有 FPK 一套，不存在抢声卡的风险。
+当时删掉的东西（按顺序）：
+
+| 对象 | 说明 |
+|---|---|
+| `/etc/systemd/system/gmediarender.service` | 自制 unit，先 `disable` 再删，然后 `daemon-reload` |
+| `/usr/local/bin/gmediarender` | 补丁版二进制（md5 `6daa11a0…`） |
+| `/usr/local/bin/gmediarender.prev2` | 更早的备份二进制 |
+| `/var/lib/gmediarender/` | 音量存档，旧值 70 |
+| Debian 包 `gmediarender 0.1-1` | `apt-get purge` 掉的，它自带 `/etc/init.d/gmediarender` + 7 个 `/etc/rc?.d/K01…` 链接 + `/etc/default/gmediarender` + `/usr/bin/gmediarender` + `/usr/share/gmediarender` |
+
+> 那个 Debian 包是最早试水时装的 0.1 版，**不 purge 的话它的 SysV 脚本会一直挂在那里**——
+> `systemctl is-enabled gmediarender` 会提示"not a native service, redirecting to systemd-sysv-install"，
+> 就是这个包在应答。查残留用 `dpkg -l | grep gmediarender`。
+
+回退需要时，`/vol2/1000/gmrender-backup/` 里仍有二进制、unit 和音量存档的副本，
+`restore.sh` 能把 systemd 版装回来（脚本已加防呆：检测到 FPK 版在跑就拒绝执行）。
+但这是应急手段，正常恢复请走 FPK。
 
 ## 恢复路径
 

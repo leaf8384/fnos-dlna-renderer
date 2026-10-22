@@ -1,6 +1,6 @@
 # 未来计划
 
-> 记录于 2026-10-22，更新于 2026-10-23。当前版本 **1.1.1**（1.0.0 稳定运行；1.0.1 修中文设备名；1.1.0 网页设置界面；1.1.1 播放控制 + 桌面入口），**暂无必须做的事**，以下按优先级排列，做到哪算哪。
+> 记录于 2026-10-22，更新于 2026-10-23。当前版本 **1.1.2**（1.0.0 稳定运行；1.0.1 修中文设备名；1.1.0 网页设置界面；1.1.1 播放控制 + 桌面入口；1.1.2 去重复页头 + 修窗口图标），**暂无必须做的事**，以下按优先级排列，做到哪算哪。
 > 应用化设计的完整方案见 [`docs/app-console-plan.md`](app-console-plan.md)。
 
 ## P0 · 待验证（决定后续路线，30 分钟）
@@ -66,7 +66,7 @@
 代价要说清楚：**应用停用后连配置页都进不去**，要改配置得先启用。接受这个代价，换来少一个状态要维护（不用再记 `ENABLED=0`，也不用担心应用重启后自己恢复广播）。
 
 
-## P2 · 播放控制与桌面入口 · **已完成（v1.1.1，2026-10-23）**
+## P2 · 播放控制与桌面入口 · **已完成（v1.1.1 / 1.1.2，2026-10-23）**
 
 - [x] **`/api/now`**：一次拿全 `state / title / artist / album / duration / position / volume / has_media / uri`
       - **控制地址不是标准的 `AVTransport1`**：gmediarender 是 `/upnp/control/rendertransport1`、`/upnp/control/rendercontrol1`，连错一律 404
@@ -83,6 +83,13 @@
       - `manifest` 必须同时有 `desktop_uidir = ui` 和 `desktop_applaunchname`
       - **第三方应用永远拿不到 `inbuilt`**（前端 `nativeApp: e.type === 'inbuilt'`，那是内置应用专用）→ 改 `app.native_app` 没用，正路只有 `app_service.type='iframe'` + `ui/`
       - 图标用 Pillow 从 256 原图重采样出 16/24/32/48/64/72/96/128/256 全套
+- [x] **窗口标题栏图标（v1.1.2）**：`app_service.icon` 是**空字符串** → 前端拼出
+      `/app-center-static/serviceicon/dlna-renderer/` + 空 → 404。这列是安装时从 `ui/config` 灌进库的，
+      **手工铺文件补不上**，必须单独 update 成 `ui/images/icon_{0}.png`。
+      `{0}` 由后端按 `?size=` 替换，所以每种尺寸都得有文件；解析基准是 `<app.path>/target/`。
+      **桌面图标（全部应用里那个）和标题栏图标不是同一份数据**，前者走 `target/ui/images`，后者走库里这列。
+- [x] **页面里的标题不再重复（v1.1.2）**：飞牛给的是带标题栏的内嵌窗口，应用名和图标已经在标题栏上，
+      页头那套 logo + h1 + 副标题整体删掉，运行状态徽标挪到「设备设置」标题行右侧。
 - [x] **应用中心库里补登记**：列表存在 **postgres `appcenter` 库**（`app_service` / `app_open` / `app_poster`），不是扫目录；手工铺文件不会自动写库。重启 `trim_app_center` 会把**所有应用**重启一遍（约 20 秒）
 
 

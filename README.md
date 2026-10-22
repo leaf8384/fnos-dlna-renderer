@@ -62,8 +62,12 @@ sudo bash scripts/install-standalone.sh
 
 装好后在应用中心点这个应用的「打开」，或者直接访问 **`http://<NAS 地址>:8790`**。
 
-一个页面，三件事：
+一个页面，四件事：
 
+- **正在播放** —— 显示当前曲名、艺人、进度，可以暂停 / 继续、停止、拖进度条、调音量。
+  数据来自向渲染器发 SOAP 查询（`GetTransportInfo` / `GetPositionInfo` / `GetMediaInfo` / `GetVolume`），
+  每秒轮询一次，页面不可见时暂停轮询。**曲名只能从 `GetMediaInfo` 拿** ——
+  gmediarender 的 `GetPositionInfo` 压根不返回 `CurrentTrackMetaData`（实测整段缺失，不是空值）。
 - **广播名** —— 手机投屏列表里显示的名字，**支持中文**（如「客厅音箱」）
 - **输出声卡** —— 从 `aplay -l` 里枚举，选错的表现是「App 显示在播放但没声音」，所以旁边配了**测试音**按钮，点一下放 2 秒 440Hz
 - **广播网卡** —— 必须选手机所在网段那张，选错手机**根本搜不到设备**

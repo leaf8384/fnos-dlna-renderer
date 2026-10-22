@@ -47,6 +47,9 @@ say "组装 app/"
 mkdir -p "$STAGE/app"
 install -m 0755 "$BIN" "$STAGE/app/gmediarender"
 install -m 0755 "$CONSOLE" "$STAGE/app/dlna-console"
+# 飞牛的桌面入口靠 app 目录下的 ui/ 描述：ui/config 声明「以 iframe 窗口打开」，
+# ui/images 提供桌面图标。缺了这两样，应用中心里就没有图标、点了会甩到新标签页。
+cp -a "${FPK_SRC}/app_ui" "$STAGE/app/ui"
 
 # 飞牛安装时把 app.tgz 解开放到 TRIM_APPDEST，所以要带 ./ 前缀打成归档
 tar czf "$STAGE/app.tgz" -C "$STAGE/app" --owner=0 --group=0 .

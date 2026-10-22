@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta name="color-scheme" content="light">
-<title>DLNA 音频桥 · 设置</title>
+<title>DLNA 音频桥</title>
 <style>
   :root {
     --brand: #4778ff;
@@ -17,389 +17,521 @@
     --line: #e6eaf2;
     --ok: #16a34a;
     --ok-bg: #e9f9ef;
-    --warn: #b45309;
-    --warn-bg: #fef6e7;
     --err: #dc2626;
     --err-bg: #fdeceb;
     --radius: 14px;
   }
   * { box-sizing: border-box; }
-  html, body { margin: 0; padding: 0; }
+  html, body { margin: 0; padding: 0; height: 100%; }
   body {
     background: var(--bg);
     color: var(--text);
-    font: 15px/1.6 -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC",
+    font: 14px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC",
           "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
     -webkit-font-smoothing: antialiased;
-    padding: 24px 16px 56px;
+    overflow: hidden;                 /* 飞牛是内嵌窗口，出现外层滚动条很难看 */
+    padding: 16px 18px 12px;
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
   }
-  .wrap { max-width: 680px; margin: 0 auto; }
-
   /* ---- 头部 ---- */
-  header { display: flex; align-items: center; gap: 14px; margin-bottom: 22px; }
+  header { display: flex; align-items: center; gap: 11px; flex: none; }
   .logo {
-    width: 46px; height: 46px; flex: none;
-    border-radius: 13px;
+    width: 38px; height: 38px; flex: none;
+    border-radius: 11px;
     background: linear-gradient(160deg, var(--brand), var(--brand-dark));
     display: grid; place-items: center;
-    box-shadow: 0 6px 16px rgba(71,120,255,.28);
+    box-shadow: 0 4px 12px rgba(71,120,255,.26);
   }
-  .logo svg { width: 26px; height: 26px; }
-  h1 { font-size: 19px; margin: 0; letter-spacing: .2px; }
-  .sub { font-size: 13px; color: var(--text-3); margin-top: 2px; }
+  .logo svg { width: 21px; height: 21px; }
+  h1 { font-size: 17px; margin: 0; letter-spacing: .2px; }
+  .sub { font-size: 12px; color: var(--text-3); margin-top: 1px; }
+  header .spacer { flex: 1; }
+  .badge {
+    display: inline-flex; align-items: center; gap: 6px;
+    padding: 5px 11px; border-radius: 999px;
+    font-size: 12.5px; font-weight: 600; white-space: nowrap;
+  }
+  .badge .dot { width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
+  .badge.on  { color: var(--ok);  background: var(--ok-bg); }
+  .badge.off { color: var(--err); background: var(--err-bg); }
+  .badge.on .dot { box-shadow: 0 0 0 3px rgba(22,163,74,.15); }
 
-  /* ---- 卡片 ---- */
+  /* ---- 主体两栏 ---- */
+  main {
+    flex: 1;
+    min-height: 0;
+    display: grid;
+    grid-template-columns: minmax(0,1.08fr) minmax(0,1fr);
+    gap: 12px;
+  }
   .card {
     background: var(--card);
     border-radius: var(--radius);
-    padding: 20px;
-    margin-bottom: 14px;
+    padding: 16px 18px;
     box-shadow: 0 1px 2px rgba(20,30,60,.04), 0 6px 20px rgba(20,30,60,.05);
+    display: flex;
+    flex-direction: column;
+    min-height: 0;
   }
   .card h2 {
-    font-size: 13px; font-weight: 600; letter-spacing: .4px;
+    font-size: 11.5px; font-weight: 600; letter-spacing: .5px;
     color: var(--text-3); text-transform: uppercase;
-    margin: 0 0 16px;
+    margin: 0 0 12px; flex: none;
   }
 
-  /* ---- 状态行 ---- */
-  .status { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
-  .badge {
-    display: inline-flex; align-items: center; gap: 7px;
-    padding: 6px 13px; border-radius: 999px;
-    font-size: 13px; font-weight: 600;
+  /* ---- 正在播放 ---- */
+  .now-title {
+    font-size: 16.5px; font-weight: 600; line-height: 1.35;
+    margin: 0 0 3px;
+    display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical;
+    overflow: hidden;
   }
-  .badge .dot { width: 7px; height: 7px; border-radius: 50%; background: currentColor; }
-  .badge.on  { color: var(--ok);  background: var(--ok-bg); }
-  .badge.off { color: var(--err); background: var(--err-bg); }
-  .badge.on .dot { box-shadow: 0 0 0 3px rgba(22,163,74,.16); }
-  .devname { font-size: 17px; font-weight: 600; }
-  .meta { font-size: 12.5px; color: var(--text-3); margin-top: 10px; word-break: break-all; }
+  .now-title.idle { color: var(--text-3); font-weight: 500; }
+  .now-sub {
+    font-size: 12.5px; color: var(--text-3);
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
 
-  /* ---- 表单 ---- */
-  .field { margin-bottom: 20px; }
-  .field:last-of-type { margin-bottom: 8px; }
-  label { display: block; font-size: 13.5px; font-weight: 600; margin-bottom: 7px; }
-  .hint { font-size: 12.5px; color: var(--text-3); margin-top: 6px; line-height: 1.5; }
-  input[type=text], select {
-    width: 100%; padding: 11px 13px;
-    font: inherit; color: var(--text);
-    background: #fbfcfe;
-    border: 1px solid var(--line); border-radius: 10px;
-    outline: none; transition: border-color .15s, box-shadow .15s;
-    appearance: none;
+  .bar-wrap { margin: 16px 0 6px; flex: none; }
+  .bar {
+    height: 6px; border-radius: 99px; background: var(--line);
+    position: relative; cursor: pointer;
   }
-  select {
-    background-image: url("data:image/svg+xml;charset=utf-8,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='8'%3E%3Cpath d='M1 1.5L6 6.5L11 1.5' fill='none' stroke='%238b93a5' stroke-width='1.6' stroke-linecap='round'/%3E%3C/svg%3E");
-    background-repeat: no-repeat;
-    background-position: right 14px center;
-    padding-right: 38px;
+  .bar .fill {
+    position: absolute; inset: 0 auto 0 0; width: 0;
+    border-radius: 99px;
+    background: linear-gradient(90deg, var(--brand), var(--brand-dark));
+    transition: width .35s linear;
   }
-  input[type=text]:focus, select:focus {
-    border-color: var(--brand);
-    box-shadow: 0 0 0 3px rgba(71,120,255,.13);
-    background: #fff;
+  .bar .knob {
+    position: absolute; top: 50%; left: 0;
+    width: 12px; height: 12px; margin: -6px 0 0 -6px;
+    border-radius: 50%; background: #fff;
+    border: 3px solid var(--brand);
+    box-shadow: 0 1px 4px rgba(30,50,110,.25);
+    transition: left .35s linear;
   }
-  .counter { float: right; font-size: 12px; color: var(--text-3); font-weight: 400; }
+  .bar.disabled { cursor: default; opacity: .55; }
+  .times {
+    display: flex; justify-content: space-between;
+    font-size: 11.5px; color: var(--text-3); margin-top: 5px;
+    font-variant-numeric: tabular-nums;
+  }
 
-  /* ---- 按钮 ---- */
-  .row { display: flex; gap: 10px; flex-wrap: wrap; margin-top: 22px; }
-  button {
-    font: inherit; font-weight: 600; cursor: pointer;
-    border-radius: 10px; padding: 11px 20px;
-    border: 1px solid transparent;
-    transition: transform .08s, box-shadow .15s, background .15s;
+  .controls {
+    display: flex; align-items: center; gap: 10px;
+    margin-top: 14px; flex: none;
   }
-  button:active { transform: translateY(1px); }
-  button:disabled { opacity: .55; cursor: not-allowed; transform: none; }
-  .primary {
+  .btn-icon {
+    width: 42px; height: 42px; border-radius: 50%;
+    border: none; cursor: pointer;
+    display: grid; place-items: center;
+    background: var(--bg); color: var(--text-2);
+    transition: background .15s, color .15s, transform .1s;
+  }
+  .btn-icon:hover { background: #e8ecf5; color: var(--text); }
+  .btn-icon:active { transform: scale(.94); }
+  .btn-icon.primary {
+    width: 50px; height: 50px;
     background: linear-gradient(160deg, var(--brand), var(--brand-dark));
-    color: #fff; box-shadow: 0 4px 14px rgba(71,120,255,.26);
+    color: #fff;
+    box-shadow: 0 5px 14px rgba(71,120,255,.32);
   }
-  .ghost { background: #fff; color: var(--text-2); border-color: var(--line); }
-  .ghost:hover { border-color: #cfd7e6; }
-  .spinner {
-    display: inline-block; width: 13px; height: 13px; vertical-align: -2px;
-    margin-right: 7px; border-radius: 50%;
-    border: 2px solid rgba(255,255,255,.4); border-top-color: #fff;
-    animation: spin .7s linear infinite;
-  }
-  @keyframes spin { to { transform: rotate(360deg); } }
+  .btn-icon.primary:hover { background: linear-gradient(160deg, #5484ff, #4363ff); color: #fff; }
+  .btn-icon:disabled { opacity: .4; cursor: default; }
+  .btn-icon svg { width: 18px; height: 18px; }
+  .btn-icon.primary svg { width: 21px; height: 21px; }
 
-  /* ---- 提示条 ---- */
-  .note {
-    display: flex; gap: 9px; align-items: flex-start;
-    padding: 12px 14px; border-radius: 10px;
-    font-size: 13px; line-height: 1.55;
+  .vol { display: flex; align-items: center; gap: 8px; margin-left: auto; color: var(--text-3); }
+  .vol svg { width: 16px; height: 16px; flex: none; }
+  .vol input[type=range] {
+    -webkit-appearance: none; appearance: none;
+    width: 92px; height: 4px; border-radius: 99px;
+    background: var(--line); outline: none; cursor: pointer;
   }
-  .note.info { background: #f2f6ff; color: #3b4a6b; }
-  .note.warn { background: var(--warn-bg); color: var(--warn); }
-  .note.ok   { background: var(--ok-bg);  color: var(--ok); }
-  .note.err  { background: var(--err-bg); color: var(--err); }
-  .note svg { width: 16px; height: 16px; flex: none; margin-top: 2px; }
+  .vol input[type=range]::-webkit-slider-thumb {
+    -webkit-appearance: none; width: 13px; height: 13px; border-radius: 50%;
+    background: #fff; border: 3px solid var(--brand);
+    box-shadow: 0 1px 4px rgba(30,50,110,.22);
+  }
+  .vol input[type=range]::-moz-range-thumb {
+    width: 13px; height: 13px; border-radius: 50%;
+    background: #fff; border: 3px solid var(--brand);
+  }
+  .vol .pct { font-size: 11.5px; width: 26px; text-align: right; font-variant-numeric: tabular-nums; }
 
-  /* ---- 日志 ---- */
-  pre {
-    background: #12161f; color: #d6dcea;
-    padding: 14px 16px; border-radius: 10px;
-    font: 12.5px/1.6 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-    overflow-x: auto; margin: 0;
-    max-height: 300px; overflow-y: auto;
-    white-space: pre-wrap; word-break: break-all;
+  /* ---- 设置 ---- */
+  .field { margin-bottom: 11px; flex: none; }
+  .field label {
+    display: block; font-size: 12px; color: var(--text-3);
+    margin-bottom: 4px;
   }
-  #result { margin-top: 16px; display: none; }
-  #result.show { display: block; }
-  .footer { text-align: center; font-size: 12px; color: var(--text-3); margin-top: 26px; line-height: 1.8; }
-  code { background: #eef1f7; padding: 1px 6px; border-radius: 5px; font-size: 12.5px; }
+  .field input[type=text], .field select {
+    width: 100%; padding: 8px 10px;
+    border: 1px solid var(--line); border-radius: 9px;
+    background: #fbfcfe; color: var(--text);
+    font-size: 13.5px; font-family: inherit;
+    outline: none; transition: border-color .15s, background .15s;
+  }
+  .field input[type=text]:focus, .field select:focus {
+    border-color: var(--brand); background: #fff;
+    box-shadow: 0 0 0 3px rgba(71,120,255,.12);
+  }
+  .actions { display: flex; gap: 8px; margin-top: auto; padding-top: 6px; flex: none; }
+  button.btn {
+    flex: 1; padding: 9px 14px; border-radius: 9px;
+    border: 1px solid var(--line); background: #fff;
+    color: var(--text); font-size: 13.5px; font-family: inherit;
+    cursor: pointer; transition: background .15s, border-color .15s;
+    white-space: nowrap;
+  }
+  button.btn:hover { background: #f6f8fd; border-color: #d8e0ee; }
+  button.btn:disabled { opacity: .55; cursor: default; }
+  button.btn.primary {
+    border-color: transparent; color: #fff;
+    background: linear-gradient(160deg, var(--brand), var(--brand-dark));
+    box-shadow: 0 3px 10px rgba(71,120,255,.26);
+  }
+  button.btn.primary:hover { background: linear-gradient(160deg, #5484ff, #4363ff); }
+
+  /* ---- 底部 ---- */
+  footer {
+    flex: none;
+    font-size: 11.5px; color: var(--text-3);
+    display: flex; align-items: center; gap: 10px;
+    min-height: 18px;
+  }
+  footer .meta { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  footer .msg { margin-left: auto; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 62%; }
+  footer .msg.ok { color: var(--ok); }
+  footer .msg.err { color: var(--err); }
+
+  /* 窄窗口：退回单栏，允许滚动（手机上本来也要滚） */
+  @media (max-width: 720px) {
+    body { overflow: auto; height: auto; }
+    main { grid-template-columns: 1fr; }
+  }
+  /* 矮窗口：压缩留白，尽量不出滚动条 */
+  @media (max-height: 560px) {
+    body { padding: 10px 14px 8px; gap: 9px; }
+    .card { padding: 12px 14px; }
+    .card h2 { margin-bottom: 9px; }
+    .bar-wrap { margin: 10px 0 4px; }
+    .controls { margin-top: 10px; }
+    .field { margin-bottom: 8px; }
+  }
 </style>
 </head>
 <body>
-<div class="wrap">
 
-  <header>
-    <div class="logo">
-      <svg viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round">
-        <rect x="5" y="2.5" width="14" height="19" rx="2.6"/>
-        <circle cx="12" cy="15.5" r="3.1"/>
-        <circle cx="12" cy="6.6" r=".9" fill="#fff" stroke="none"/>
-      </svg>
-    </div>
-    <div>
-      <h1>DLNA 音频桥</h1>
-      <div class="sub" id="subtitle">把 NAS 变成音箱的投放目标</div>
-    </div>
-  </header>
-
-  <!-- 状态 -->
-  <div class="card">
-    <h2>当前状态</h2>
-    <div class="status">
-      <div>
-        <div class="devname" id="devName">—</div>
-        <div class="meta" id="devMeta">读取中…</div>
-      </div>
-      <span class="badge off" id="badge"><span class="dot"></span><span id="badgeText">读取中</span></span>
-    </div>
+<header>
+  <div class="logo">
+    <svg viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M11 5 6 9H3v6h3l5 4V5z"/>
+      <path d="M15.5 8.5a5 5 0 0 1 0 7"/>
+      <path d="M18.5 5.5a9 9 0 0 1 0 13"/>
+    </svg>
   </div>
+  <div>
+    <h1>DLNA 音频桥</h1>
+    <div class="sub" id="devsub">DLNA / UPnP 音频渲染器</div>
+  </div>
+  <div class="spacer"></div>
+  <span class="badge off" id="badge"><span class="dot"></span><span id="badgetext">读取中</span></span>
+</header>
 
-  <!-- 设置 -->
-  <div class="card">
-    <h2>设置</h2>
+<main>
+  <!-- 左：正在播放 -->
+  <section class="card">
+    <h2>正在播放</h2>
+    <div class="now-title idle" id="title">未在播放</div>
+    <div class="now-sub" id="artist">用手机音乐 App 投屏到这台设备</div>
 
-    <div class="field">
-      <label for="name">广播名 <span class="counter" id="counter">0/32</span></label>
-      <input type="text" id="name" maxlength="32" placeholder="例如：客厅音箱" autocomplete="off">
-      <div class="hint">手机投屏列表里显示的名字，可以用中文。改完设备标识（UDN）不变，手机不会多出一条旧记录。</div>
+    <div class="bar-wrap">
+      <div class="bar disabled" id="bar">
+        <div class="fill" id="fill"></div>
+        <div class="knob" id="knob"></div>
+      </div>
+      <div class="times"><span id="tpos">0:00</span><span id="tdur">0:00</span></div>
     </div>
 
-    <div class="field">
-      <label for="audiodev">输出声卡</label>
-      <select id="audiodev"></select>
-      <div class="hint">选错声卡的表现是「App 显示在播放，但音箱没声音」。拿不准就点下面的<b>测试音</b>逐个试。</div>
+    <div class="controls">
+      <button class="btn-icon primary" id="btnToggle" title="播放 / 暂停" disabled>
+        <svg id="icoPlay" viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg>
+        <svg id="icoPause" viewBox="0 0 24 24" fill="currentColor" style="display:none"><path d="M7 5h4v14H7zM13 5h4v14h-4z"/></svg>
+      </button>
+      <button class="btn-icon" id="btnStop" title="停止" disabled>
+        <svg viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="6" width="12" height="12" rx="2"/></svg>
+      </button>
+      <div class="vol">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
+          <path d="M11 5 6 9H3v6h3l5 4V5z"/><path d="M15.5 8.5a5 5 0 0 1 0 7"/>
+        </svg>
+        <input type="range" id="vol" min="0" max="100" value="60" disabled>
+        <span class="pct" id="volpct">--</span>
+      </div>
     </div>
+  </section>
 
+  <!-- 右：设备设置 -->
+  <section class="card">
+    <h2>设备设置</h2>
+    <div class="field">
+      <label for="name">广播名（手机上显示的名字）</label>
+      <input type="text" id="name" maxlength="32" placeholder="例如：客厅音箱">
+    </div>
+    <div class="field">
+      <label for="audio">输出声卡</label>
+      <select id="audio"></select>
+    </div>
     <div class="field">
       <label for="iface">广播网卡</label>
       <select id="iface"></select>
-      <div class="hint">必须选手机所在网段的那张，否则手机<b>根本搜不到设备</b>。改完手机上可能要 1–2 分钟才刷新，或者需要重开音乐 App。</div>
     </div>
-
-    <div class="note warn">
-      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
-        <circle cx="12" cy="12" r="9"/><path d="M12 8v5"/><circle cx="12" cy="16.5" r=".8" fill="currentColor" stroke="none"/>
-      </svg>
-      <span>保存会重启渲染器让配置生效，<b>正在播放的音乐会中断 1–2 秒</b>，这是正常的。</span>
+    <div class="actions">
+      <button class="btn" id="btnTone">测试音</button>
+      <button class="btn primary" id="btnSave">保存并重启</button>
     </div>
+  </section>
+</main>
 
-    <div class="row">
-      <button class="primary" id="saveBtn">保存并生效</button>
-      <button class="ghost" id="toneBtn">测试音</button>
-    </div>
-
-    <div id="result"></div>
-  </div>
-
-  <div class="footer">
-    停止 / 启动请用飞牛<b>应用中心</b>的「停用 / 启用」<br>
-    配置文件 <code>renderer.conf</code> · 端口 8790
-  </div>
-</div>
+<footer>
+  <span class="meta" id="footmeta">读取中…</span>
+  <span class="msg" id="msg"></span>
+</footer>
 
 <script>
 (function () {
   var $ = function (id) { return document.getElementById(id); };
-  var state = null;
+  var state = null;          // /api/state
+  var devices = null;        // /api/devices
+  var nowTimer = null;
+  var lastVolSet = 0;
 
-  function api(path, opt) {
-    return fetch(path, opt).then(function (r) {
-      return r.json().then(function (j) {
-        if (!r.ok) { throw new Error(j.message || ('HTTP ' + r.status)); }
-        return j;
-      });
-    });
+  function fmt(sec) {
+    sec = Math.max(0, Math.floor(sec || 0));
+    var m = Math.floor(sec / 60), s = sec % 60;
+    return m + ':' + (s < 10 ? '0' : '') + s;
   }
 
-  function setBadge(running) {
-    var b = $('badge');
-    b.className = 'badge ' + (running ? 'on' : 'off');
-    $('badgeText').textContent = running ? '运行中' : '已停止';
+  function setMsg(text, kind) {
+    var el = $('msg');
+    el.textContent = text || '';
+    el.className = 'msg' + (kind ? ' ' + kind : '');
   }
 
-  function showResult(kind, text, logTail) {
-    var box = $('result');
-    var icons = {
-      ok:   '<path d="M20 6L9 17l-5-5"/>',
-      err:  '<circle cx="12" cy="12" r="9"/><path d="M12 8v5"/><circle cx="12" cy="16.5" r=".8" fill="currentColor" stroke="none"/>',
-      warn: '<circle cx="12" cy="12" r="9"/><path d="M12 8v5"/><circle cx="12" cy="16.5" r=".8" fill="currentColor" stroke="none"/>'
-    };
-    var html = '<div class="note ' + kind + '">' +
-      '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">' +
-      (icons[kind] || icons.warn) + '</svg><span>' + text + '</span></div>';
-    if (logTail) {
-      html += '<pre style="margin-top:10px">' + escapeHtml(logTail) + '</pre>';
-    }
-    box.innerHTML = html;
-    box.className = 'show';
-  }
-
-  function escapeHtml(s) {
-    return String(s).replace(/[&<>"]/g, function (c) {
-      return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c];
-    });
-  }
-
-  function fillCards(cards, current) {
-    var sel = $('audiodev');
+  function fillSelect(sel, items, current) {
     sel.innerHTML = '';
-    if (!cards.length) {
-      sel.innerHTML = '<option value="">没找到可用的声卡</option>';
-      return;
-    }
-    cards.forEach(function (c) {
+    var found = false;
+    items.forEach(function (it) {
       var o = document.createElement('option');
-      o.value = c.value;
-      var label = c.name + ' · ' + c.chip;
-      if (c.busy) { label += '（正在使用）'; }
-      o.textContent = label;
-      if (c.value === current) { o.selected = true; }
+      o.value = it.value;
+      o.textContent = it.text;
+      if (it.value === current) { o.selected = true; found = true; }
       sel.appendChild(o);
     });
-    if (!current && cards.length) { sel.selectedIndex = 0; }
+    if (!found && current) {
+      var o = document.createElement('option');
+      o.value = current;
+      o.textContent = current + '（当前，已不可用）';
+      o.selected = true;
+      sel.insertBefore(o, sel.firstChild);
+    }
   }
 
-  function fillIfaces(ifaces, current) {
-    var sel = $('iface');
-    sel.innerHTML = '';
-    if (!ifaces.length) {
-      sel.innerHTML = '<option value="">没找到可用的网卡</option>';
+  function loadState() {
+    return fetch('/api/state').then(function (r) { return r.json(); }).then(function (s) {
+      state = s;
+      var on = !!s.running;
+      $('badge').className = 'badge ' + (on ? 'on' : 'off');
+      $('badgetext').textContent = on ? '运行中' : '已停止';
+      $('devsub').textContent = s.friendly_name || 'DLNA 音频渲染器';
+      $('name').value = s.friendly_name || '';
+      $('footmeta').textContent = 'v' + s.version + ' · ' + s.listen_addr +
+        ' · ' + (s.audiodev || '');
+      if (!on) {
+        setNowIdle('渲染器已停止');
+      }
+    });
+  }
+
+  function loadDevices() {
+    return fetch('/api/devices').then(function (r) { return r.json(); }).then(function (d) {
+      devices = d;
+      fillSelect($('iface'),
+        (d.ifaces || []).map(function (i) {
+          return { value: i.name, text: i.name + ' · ' + i.ipv4 + (i.default ? '（默认路由）' : '') };
+        }), state && state.iface);
+
+      fillSelect($('audio'),
+        (d.cards || []).map(function (c) {
+          return {
+            value: c.value,
+            text: c.name + ' — ' + c.chip + (c.busy ? '（占用中）' : '')
+          };
+        }), state && state.audiodev);
+    });
+  }
+
+  // ---------------- 播放状态 ----------------
+
+  function setNowIdle(text) {
+    $('title').textContent = text || '未在播放';
+    $('title').className = 'now-title idle';
+    $('artist').textContent = '用手机音乐 App 投屏到这台设备';
+    $('fill').style.width = '0%';
+    $('knob').style.left = '0%';
+    $('tpos').textContent = '0:00';
+    $('tdur').textContent = '0:00';
+    $('btnToggle').disabled = true;
+    $('btnStop').disabled = true;
+    $('bar').className = 'bar disabled';
+  }
+
+  function renderNow(n) {
+    var playing = n.state === 'PLAYING';
+    var paused = n.state === 'PAUSED_PLAYBACK' || n.state === 'PAUSED';
+    var active = playing || paused;
+
+    if (!n.running || (!active && !n.title)) {
+      setNowIdle(n.running ? '未在播放' : '渲染器已停止');
+      if (n.running) {
+        $('btnToggle').disabled = false;   // 停止态也能按播放（有 URI 才会生效）
+      }
       return;
     }
-    ifaces.forEach(function (i) {
-      var o = document.createElement('option');
-      o.value = i.name;
-      var label = i.name + ' · ' + i.ipv4;
-      if (i.default) { label += '（默认路由）'; }
-      o.textContent = label;
-      if (i.name === current) { o.selected = true; }
-      sel.appendChild(o);
-    });
-    if (!current) {
-      for (var k = 0; k < ifaces.length; k++) {
-        if (ifaces[k].recommended) { sel.selectedIndex = k; break; }
+
+    if (n.title) {
+      $('title').textContent = n.title;
+      $('title').className = 'now-title';
+    }
+    var who = [];
+    if (n.artist) who.push(n.artist);
+    if (n.album && n.album !== n.title) who.push(n.album);
+    $('artist').textContent = who.join(' · ') || '未知艺人';
+
+    var dur = n.duration || 0, pos = n.position || 0;
+    var pct = dur > 0 ? Math.min(100, (pos / dur) * 100) : 0;
+    $('fill').style.width = pct + '%';
+    $('knob').style.left = pct + '%';
+    $('tpos').textContent = fmt(pos);
+    $('tdur').textContent = fmt(dur);
+    $('bar').className = 'bar' + (dur > 0 ? '' : ' disabled');
+
+    $('btnToggle').disabled = false;
+    $('btnStop').disabled = !active;
+    $('icoPlay').style.display = playing ? 'none' : '';
+    $('icoPause').style.display = playing ? '' : 'none';
+
+    if (typeof n.volume === 'number') {
+      $('vol').disabled = false;
+      if (Date.now() - lastVolSet > 1200) {
+        $('vol').value = n.volume;
+        $('volpct').textContent = n.volume + '%';
       }
     }
   }
 
-  function updateCounter() {
-    $('counter').textContent = $('name').value.length + '/32';
+  function pollNow() {
+    if (document.hidden) return;
+    fetch('/api/now').then(function (r) { return r.json(); }).then(renderNow).catch(function () {});
   }
 
-  function load() {
-    return Promise.all([api('/api/state'), api('/api/devices')]).then(function (res) {
-      state = res[0];
-      var devices = res[1];
-
-      $('devName').textContent = state.friendly_name || '（未命名）';
-      $('devMeta').textContent = '版本 ' + state.version +
-        ' · 网卡 ' + (state.iface || '?') +
-        ' · 声卡 ' + (state.audiodev || '?');
-      $('subtitle').textContent = 'PID ' + (state.pid || '—') + ' · 控制台 ' + state.listen_addr;
-      setBadge(state.running);
-
-      $('name').value = state.friendly_name || '';
-      updateCounter();
-      fillCards(devices.cards, state.audiodev);
-      fillIfaces(devices.ifaces, state.iface);
-    }).catch(function (e) {
-      showResult('err', '读取失败：' + escapeHtml(e.message));
-    });
+  function startPoll() {
+    if (nowTimer) clearInterval(nowTimer);
+    nowTimer = setInterval(pollNow, 1000);
+    pollNow();
   }
 
-  $('name').addEventListener('input', updateCounter);
+  // ---------------- 控制 ----------------
 
-  $('toneBtn').addEventListener('click', function () {
-    var btn = this;
-    var dev = $('audiodev').value;
-    if (!dev) { showResult('err', '先选一个声卡'); return; }
-    btn.disabled = true;
-    btn.innerHTML = '<span class="spinner"></span>播放中';
-    api('/api/test-tone', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ audiodev: dev })
-    }).then(function (r) {
-      showResult('ok', '已在这块声卡上放了 2 秒 440Hz 的提示音。<b>听到就说明选对了</b>。');
-    }).catch(function (e) {
-      showResult('err', '播放失败：' + escapeHtml(e.message) +
-        '<br>常见原因是这块声卡正被别的程序占着。');
-    }).finally(function () {
-      btn.disabled = false;
-      btn.textContent = '测试音';
-    });
-  });
-
-  $('saveBtn').addEventListener('click', function () {
-    var btn = this;
-    var payload = {
-      friendly_name: $('name').value,
-      iface: $('iface').value,
-      audiodev: $('audiodev').value
-    };
-    if (!payload.iface || !payload.audiodev) {
-      showResult('err', '网卡和声卡都得选一个');
-      return;
-    }
-    // 改网卡等于让手机重新发现设备，提前说清楚，别让人以为弄坏了
-    var ifaceChanged = state && payload.iface !== state.iface;
-    var nameChanged = state && payload.friendly_name !== state.friendly_name;
-
-    btn.disabled = true;
-    btn.innerHTML = '<span class="spinner"></span>应用中';
-    $('result').className = '';
-
-    api('/api/config', {
+  function control(payload) {
+    return fetch('/api/control', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(payload)
-    }).then(function (r) {
-      var extra = '';
-      if (r.ok && nameChanged) {
-        extra = '<br>手机上的设备名可能要重开音乐 App 才会变。';
-      }
-      if (r.ok && ifaceChanged) {
-        extra = '<br>换了网卡，手机上可能 1–2 分钟才重新出现这台设备。';
-      }
-      showResult(r.ok ? 'ok' : 'err', escapeHtml(r.message) + extra, r.log_tail);
-      return load();
+    }).then(function (r) { return r.json().then(function (j) { return { ok: r.ok, body: j }; }); })
+      .then(function (res) {
+        if (!res.ok || !res.body.ok) {
+          setMsg((res.body && res.body.message) || '操作失败', 'err');
+        } else {
+          setMsg('');
+        }
+        setTimeout(pollNow, 250);
+        return res;
+      });
+  }
+
+  $('btnToggle').onclick = function () {
+    var playing = $('icoPause').style.display !== 'none';
+    control({ action: playing ? 'pause' : 'play' });
+  };
+  $('btnStop').onclick = function () { control({ action: 'stop' }); };
+
+  $('vol').oninput = function () {
+    $('volpct').textContent = this.value + '%';
+  };
+  $('vol').onchange = function () {
+    lastVolSet = Date.now();
+    control({ action: 'volume', value: parseInt(this.value, 10) });
+  };
+
+  $('bar').onclick = function (ev) {
+    if (this.className.indexOf('disabled') >= 0) return;
+    var rect = this.getBoundingClientRect();
+    var ratio = Math.min(1, Math.max(0, (ev.clientX - rect.left) / rect.width));
+    control({ action: 'seek', value: Math.round(ratio * (parseFloat($('tdur').textContent.split(':')[0]) * 60 +
+      parseFloat($('tdur').textContent.split(':')[1] || 0))) });
+  };
+
+  // ---------------- 保存 / 测试音 ----------------
+
+  $('btnTone').onclick = function () {
+    this.disabled = true;
+    setMsg('正在播放测试音…');
+    fetch('/api/test-tone', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ audiodev: $('audio').value })
+    }).then(function (r) { return r.json(); }).then(function (j) {
+      setMsg(j.message || (j.ok ? '已播放' : '失败'), j.ok ? 'ok' : 'err');
     }).catch(function (e) {
-      showResult('err', '保存失败：' + escapeHtml(e.message));
-    }).finally(function () {
-      btn.disabled = false;
-      btn.textContent = '保存并生效';
-    });
+      setMsg('请求失败：' + e.message, 'err');
+    }).then(function () { $('btnTone').disabled = false; });
+  };
+
+  $('btnSave').onclick = function () {
+    var payload = {
+      friendly_name: $('name').value,
+      iface: $('iface').value,
+      audiodev: $('audio').value
+    };
+    var ifaceChanged = state && payload.iface !== state.iface;
+    this.disabled = true;
+    setMsg('保存中…');
+    fetch('/api/config', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload)
+    }).then(function (r) { return r.json(); }).then(function (j) {
+      var extra = '';
+      if (j.ok && ifaceChanged) extra = '（换了网卡，手机上可能 1–2 分钟才重新出现）';
+      setMsg((j.message || (j.ok ? '已保存' : '失败')) + extra, j.ok ? 'ok' : 'err');
+      return loadState().then(loadDevices).then(startPoll);
+    }).catch(function (e) {
+      setMsg('请求失败：' + e.message, 'err');
+    }).then(function () { $('btnSave').disabled = false; });
+  };
+
+  document.addEventListener('visibilitychange', function () {
+    if (!document.hidden) pollNow();
   });
 
-  load();
+  loadState().then(loadDevices).then(startPoll).catch(function (e) {
+    setMsg('无法连接控制台：' + e.message, 'err');
+  });
 })();
 </script>
 </body>

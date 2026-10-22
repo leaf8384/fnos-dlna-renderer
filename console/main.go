@@ -15,6 +15,7 @@ import (
 	"encoding/binary"
 	"encoding/json"
 	"fmt"
+	"html"
 	"io"
 	"log"
 	"math"
@@ -34,6 +35,13 @@ const (
 	upnpPort    = 49494
 	defaultPort = "8790"
 	nameMaxRune = 32
+
+	// 控制地址不是标准的 AVTransport1 —— gmediarender 用的是 rendertransport1，
+	// 连错会 404（这坑踩过，别改）。
+	ctrlTransport = "/upnp/control/rendertransport1"
+	ctrlRendering = "/upnp/control/rendercontrol1"
+	nsTransport   = "urn:schemas-upnp-org:service:AVTransport:1"
+	nsRendering   = "urn:schemas-upnp-org:service:RenderingControl:1"
 )
 
 //go:embed index.html
@@ -489,6 +497,141 @@ func playTone(dev string) error {
 	return nil
 }
 
+// ---------------------------------------------------------------- UPnP 播放状态 / 控制
+
+// 控制台自己不去拉流，只通过 SOAP 指挥渲染器 —— 播放链路的唯一真相仍在 gmediarender。
+var upnpClient = &http.Client{Timeout: 4 * time.Second}
+
+func soapCall(host, path, ns, action, args string) (string, error) {
+	if host == "" {
+		return "", fmt.Errorf("没有可用的网卡地址")
+	}
+	body := fmt.Sprintf(
+		`<?xml version="1.0"?><s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/" `+
+			`s:encodingStyle="http://schemas.xmlsoap.org/soap/encoding/"><s:Body>`+
+			`<u:%s xmlns:u="%s"><InstanceID>0</InstanceID>%s</u:%s></s:Body></s:Envelope>`,
+		action, ns, args, action)
+	req, err := http.NewRequest(http.MethodPost,
+		fmt.Sprintf("http://%s:%d%s", host, upnpPort, path), strings.NewReader(body))
+	if err != nil {
+		return "", err
+	}
+	req.Header.Set("Content-Type", `text/xml; charset="utf-8"`)
+	req.Header.Set("SOAPACTION", `"`+ns+"#"+action+`"`)
+	resp, err := upnpClient.Do(req)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+	data, err := io.ReadAll(io.LimitReader(resp.Body, 128<<10))
+	if err != nil {
+		return "", err
+	}
+	if resp.StatusCode != http.StatusOK {
+		return string(data), fmt.Errorf("渲染器返回 %d", resp.StatusCode)
+	}
+	return string(data), nil
+}
+
+// SOAP 响应里的元数据是转义过的 XML（&lt;dc:title&gt;），先反转义再取值，
+// 所以这个函数会被套两层用。
+func tagValue(s, tag string) string {
+	re := regexp.MustCompile(`(?s)<` + regexp.QuoteMeta(tag) + `>(.*?)</` + regexp.QuoteMeta(tag) + `>`)
+	m := re.FindStringSubmatch(s)
+	if m == nil {
+		return ""
+	}
+	return strings.TrimSpace(html.UnescapeString(m[1]))
+}
+
+func hmsToSec(v string) int {
+	v = strings.TrimSpace(v)
+	if v == "" || !strings.Contains(v, ":") {
+		return 0
+	}
+	total := 0
+	for _, part := range strings.Split(v, ":") {
+		part = strings.SplitN(part, ".", 2)[0] // 有的实现会带毫秒
+		n, err := strconv.Atoi(part)
+		if err != nil || n < 0 {
+			return 0
+		}
+		total = total*60 + n
+	}
+	return total
+}
+
+func secToHMS(sec int) string {
+	return fmt.Sprintf("%d:%02d:%02d", sec/3600, (sec%3600)/60, sec%60)
+}
+
+// 渲染器只监听配置里那张网卡的地址，所以查状态也得走同一个地址。
+func rendererHost(p paths) string {
+	c := readConf(p.conf)
+	if ip := ifaceIPv4(c["IFACE"]); ip != "" {
+		return ip
+	}
+	if ip := ifaceIPv4(defaultRouteIface()); ip != "" {
+		return ip
+	}
+	return ""
+}
+
+type nowResp struct {
+	Running   bool   `json:"running"`
+	State     string `json:"state"`
+	Title     string `json:"title"`
+	Artist    string `json:"artist"`
+	Album     string `json:"album"`
+	Duration  int    `json:"duration"`
+	Position  int    `json:"position"`
+	Volume    int    `json:"volume"`
+	HasVolume bool   `json:"has_volume"`
+	Error     string `json:"error,omitempty"`
+}
+
+func nowPlaying(p paths) nowResp {
+	res := nowResp{Running: rendererRunning(p), State: "STOPPED"}
+	if !res.Running {
+		return res
+	}
+	host := rendererHost(p)
+
+	info, err := soapCall(host, ctrlTransport, nsTransport, "GetTransportInfo", "")
+	if err != nil {
+		res.Error = err.Error()
+		return res
+	}
+	res.State = tagValue(info, "CurrentTransportState")
+
+	if pos, err := soapCall(host, ctrlTransport, nsTransport, "GetPositionInfo", ""); err == nil {
+		res.Position = hmsToSec(tagValue(pos, "RelTime"))
+		res.Duration = hmsToSec(tagValue(pos, "TrackDuration"))
+	}
+
+	// 曲名/艺人只能从 GetMediaInfo 拿 —— gmediarender 的 GetPositionInfo
+	// 根本不返回 CurrentTrackMetaData（实测响应里整段缺失，不是空值）。
+	if media, err := soapCall(host, ctrlTransport, nsTransport, "GetMediaInfo", ""); err == nil {
+		meta := tagValue(media, "CurrentURIMetaData")
+		if meta != "" {
+			res.Title = tagValue(meta, "dc:title")
+			res.Artist = tagValue(meta, "upnp:artist")
+			if res.Artist == "" {
+				res.Artist = tagValue(meta, "dc:creator") // 网易云只用 dc:creator
+			}
+			res.Album = tagValue(meta, "upnp:album")
+		}
+	}
+
+	if v, err := soapCall(host, ctrlRendering, nsRendering, "GetVolume", "<Channel>Master</Channel>"); err == nil {
+		if n, e := strconv.Atoi(tagValue(v, "CurrentVolume")); e == nil {
+			res.Volume = n
+			res.HasVolume = true
+		}
+	}
+	return res
+}
+
 // ---------------------------------------------------------------- 校验
 
 func cleanName(s string) string {
@@ -621,6 +764,63 @@ func main() {
 			ifaces = []ifaceInfo{}
 		}
 		writeJSON(w, 200, map[string]interface{}{"cards": cards, "ifaces": ifaces})
+	})
+
+	mux.HandleFunc("/api/now", func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(w, 200, nowPlaying(p))
+	})
+
+	mux.HandleFunc("/api/control", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			writeJSON(w, 405, map[string]interface{}{"ok": false, "message": "只接受 POST"})
+			return
+		}
+		var req struct {
+			Action string `json:"action"`
+			Value  int    `json:"value"`
+		}
+		if err := json.NewDecoder(io.LimitReader(r.Body, 4096)).Decode(&req); err != nil {
+			writeJSON(w, 400, map[string]interface{}{"ok": false, "message": "请求格式不对"})
+			return
+		}
+		if !rendererRunning(p) {
+			writeJSON(w, 503, map[string]interface{}{"ok": false, "message": "渲染器没在运行"})
+			return
+		}
+		host := rendererHost(p)
+
+		// 动作白名单：参数一律由后端拼，前端只给名字和数字，杜绝拼 SOAP 注入
+		var err error
+		switch req.Action {
+		case "play":
+			_, err = soapCall(host, ctrlTransport, nsTransport, "Play", "<Speed>1</Speed>")
+		case "pause":
+			_, err = soapCall(host, ctrlTransport, nsTransport, "Pause", "")
+		case "stop":
+			_, err = soapCall(host, ctrlTransport, nsTransport, "Stop", "")
+		case "seek":
+			if req.Value < 0 || req.Value > 86400 {
+				writeJSON(w, 400, map[string]interface{}{"ok": false, "message": "进度超出范围"})
+				return
+			}
+			_, err = soapCall(host, ctrlTransport, nsTransport, "Seek",
+				"<Unit>REL_TIME</Unit><Target>"+secToHMS(req.Value)+"</Target>")
+		case "volume":
+			if req.Value < 0 || req.Value > 100 {
+				writeJSON(w, 400, map[string]interface{}{"ok": false, "message": "音量超出范围"})
+				return
+			}
+			_, err = soapCall(host, ctrlRendering, nsRendering, "SetVolume",
+				fmt.Sprintf("<Channel>Master</Channel><DesiredVolume>%d</DesiredVolume>", req.Value))
+		default:
+			writeJSON(w, 400, map[string]interface{}{"ok": false, "message": "不支持的操作"})
+			return
+		}
+		if err != nil {
+			writeJSON(w, 500, map[string]interface{}{"ok": false, "message": err.Error()})
+			return
+		}
+		writeJSON(w, 200, map[string]interface{}{"ok": true})
 	})
 
 	mux.HandleFunc("/api/test-tone", func(w http.ResponseWriter, r *http.Request) {

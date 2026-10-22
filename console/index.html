@@ -419,14 +419,14 @@
       return;
     }
 
-    if (n.title) {
-      $('title').textContent = n.title;
-      $('title').className = 'now-title';
-    }
+    // 有些流不带 DIDL 元数据（有 URI 没曲名），这时不能沿用上一首的文字，
+    // 否则会出现「未在播放」配着进度条在走的怪画面。
+    $('title').textContent = n.title || '正在播放（无曲目信息）';
+    $('title').className = 'now-title' + (n.title ? '' : ' idle');
     var who = [];
     if (n.artist) who.push(n.artist);
     if (n.album && n.album !== n.title) who.push(n.album);
-    $('artist').textContent = who.join(' · ') || '未知艺人';
+    $('artist').textContent = who.join(' · ') || '来自手机投屏';
 
     var dur = n.duration || 0, pos = n.position || 0;
     var pct = dur > 0 ? Math.min(100, (pos / dur) * 100) : 0;

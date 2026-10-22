@@ -20,10 +20,26 @@ jobs:
 
       - name: 安装构建依赖
         run: |
-          sudo apt-get update
+          set -x
+          # runner 的 apt 源偶尔会短暂异常，update 失败不该直接判死整个 job，
+          # 真正的依赖缺失留给 build.sh 去报，那里提示更准确。
+          sudo apt-get update -o Acquire::Retries=3 -y || echo "apt-get update 有非致命错误，继续"
           sudo apt-get install -y --no-install-recommends \
             build-essential autoconf automake libtool pkg-config \
-            libupnp-dev libgstreamer1.0-dev
+            libgstreamer1.0-dev
+          # libupnp 的 dev 包名在不同发行版间会变，按可用性择优
+          sudo apt-get install -y --no-install-recommends libupnp-dev || \
+            sudo apt-get install -y --no-install-recommends libupnp13-dev
+
+      - name: 依赖诊断
+        if: failure()
+        run: |
+          echo "--- apt 源 ---"
+          grep -rhE '^deb ' /etc/apt/sources.list /etc/apt/sources.list.d/ 2>/dev/null | head -20
+          echo "--- libupnp 相关可用包 ---"
+          apt-cache search libupnp || true
+          echo "--- gstreamer dev ---"
+          apt-cache policy libgstreamer1.0-dev || true
 
       - name: 校验 fnpack.json
         run: python3 -c "import json,sys; json.load(open('fnpack.json')); print('fnpack.json 合法')"

@@ -44,8 +44,19 @@ jobs:
 
       - name: 回填 fnpack.json
         run: |
+          # 不要用 ls | head -1：dist/ 里可能同时留着历史版本的 fpk，
+          # 按字母序会选到旧的那个，导致 download_url 指向已废弃的包。
+          # 刚构建出来的包 mtime 最新，用 ls -t 才可靠。
+          FPK="$(ls -t dist/*.fpk | head -1)"
+          echo "回填：$FPK"
           python3 scripts/update-fnpack.py \
-            --url "https://github.com/${{ github.repository }}/releases/download/${{ github.ref_name }}/$(ls dist | head -1)"
+            --url "https://github.com/${{ github.repository }}/releases/download/${{ github.ref_name }}/$(basename "$FPK")"
+
+      - name: 删除历史版本的 fpk（只发布本次构建的）
+        run: |
+          CURRENT="$(ls -t dist/*.fpk | head -1)"
+          find dist -name '*.fpk' ! -path "$CURRENT" -print -delete
+          ls -l dist/
 
       - name: 上传构建产物
         uses: actions/upload-artifact@v4

@@ -59,14 +59,13 @@ gmediarender 的启动参数（`-I` / `-f` / `--gstout-audiodevice` / `GMR_VOLUM
 ```
 GET  /api/state      → {running, friendly_name, iface, audiodev, version}
 GET  /api/devices    → {cards:[...], ifaces:[...]}   枚举硬件
-POST /api/config     → {friendly_name, iface, audiodev}  写配置并重启
-POST /api/power      → {on:true|false}   仅启停渲染器，不动控制台
+POST /api/config     → {friendly_name, iface, audiodev}  写配置并重启渲染器
 POST /api/test-tone  → 在选定声卡上放 2 秒 440Hz
 ```
 
 ---
 
-## 3. 四个设置项的落地细节
+## 3. 三项设置的落地细节（外加开关的归属）
 
 ### 3.1 广播名（friendlyName）
 
@@ -114,22 +113,24 @@ card 1: HDMI [HDA Intel HDMI], device 3: HDMI 0 [HDMI 0]
 
 要在界面上直接给警示文案：*切换网卡后手机上可能要 1–2 分钟才刷新出设备，或需要重开音乐 App。*
 
-### 3.4 开关
+### 3.4 开关：不做在界面里
 
-分两层，别混在一起：
+启停完全交给应用中心的「启用 / 停用」：
 
-| 层 | 触发方式 | 行为 |
-|---|---|---|
-| 应用启用/停用 | 应用中心按钮 → `cmd/main start\|stop` | 渲染器 + 控制台一起启停 |
-| 「暂停广播」 | 控制台里的开关 → `POST /api/power` | 只停 gmediarender，控制台继续活着，可随时开回来 |
+| 操作 | 实际行为 |
+|---|---|
+| 应用中心「停用」 | `cmd/main stop` → 渲染器 + 控制台一起停 |
+| 应用中心「启用」 | `cmd/main start` → 一起起 |
 
-「暂停广播」这个状态要单独记（`renderer.conf` 里加 `ENABLED=0`），否则应用重启后会自动恢复广播，用户会以为开关失效。
+这样不需要在 `renderer.conf` 里记 `ENABLED`，也不用担心"应用重启后自动恢复广播"这种状态不一致。
+
+代价是：**应用停用后配置页也进不去**，想改配置必须先启用。这个取舍是划算的——用户要停播时本来就在应用中心，不会先开浏览器。
 
 ---
 
 ## 4. 配置文件
 
-保持现在的 shell 可 `source` 的格式（`cmd/main` 直接 `.` 进来用），扩两个字段：
+保持现在的 shell 可 `source` 的格式（`cmd/main` 直接 `.` 进来用），扩一个字段：
 
 ```sh
 # 唯一不可重复的标识，决定手机记住的是哪台设备；不要随名字变
@@ -137,7 +138,6 @@ UDN="uuid:GMediaRender-1_0-000-000-002"
 FRIENDLY_NAME="Marshall"
 IFACE="enp5s0"
 AUDIODEV="plughw:CARD=PCH,DEV=0"
-ENABLED=1
 ```
 
 `UDN` 独立存的好处：用户把名字从「Marshall」改成「客厅音箱」，手机里还是同一台设备，不会多出一条幽灵记录。
@@ -150,8 +150,7 @@ ENABLED=1
 
 ```
 保存 → 校验 → 写 conf（原子写：先写 .tmp 再 mv）
-     → cmd/main stop（等 pid 真正退出，最多 5 秒）
-     → cmd/main start
+     → cmd/main restart-renderer（内部：停 → 等 pid 真退出，最多 5 秒 → 起）
      → 轮询 status + 嗅探 1900 的 NOTIFY 确认新名字已广播
      → 返回结果（失败时把 renderer.log 最后 20 行带回来显示）
 ```
@@ -164,8 +163,8 @@ ENABLED=1
 
 - 控制台以 **root** 跑（要执行 `aplay`、`ip`、启停进程）。这是 `privilege` 里 `run-as: root` 的既定事实。
 - 因此**必须限制暴露面**：只监听局域网网卡，不要 `0.0.0.0` 全绑；不要提供任何"执行任意命令"的接口，接口参数一律白名单校验（声卡名必须出现在 `aplay -l` 的结果里，网卡名必须在 `ip -br link` 里）。
-- fnOS 有公网 IPv6 下发到内网设备（前缀会漂移），所以**不要只靠绑定 0.0.0.0 + 防火墙**。默认绑内网 IPv4，并在设置里留一个「允许外部访问」开关（默认关），开的时候强制设管理密码。
-- 不做的事：不提供文件浏览、不提供上传、不提供任意重启。
+- fnOS 有公网 IPv6 下发到内网设备（前缀会漂移），所以**不要只靠绑定 0.0.0.0 + 防火墙**。控制台只绑内网 IPv4，不提供外部访问入口。
+- 不做的事：不提供文件浏览、不提供上传、不提供任意重启、不做管理密码体系（只在内网用）。
 
 ---
 
@@ -174,10 +173,9 @@ ENABLED=1
 | 阶段 | 内容 | 能否独立交付 |
 |---|---|---|
 | P0 | 修中文广播名（`LANG=C.UTF-8`）+ 补 `dlna:X_DLNADOC` | 是，两处小改，先验证 |
-| P1 | `dlna-console`：只读展示当前配置 + 硬件列表 + 测试音 | 是，零风险，先让用户看见 |
-| P2 | 写配置 + 重启生效（名字/声卡/网卡） | 是 |
-| P3 | 开关（应用级 + 广播级）、`service_port` 接进应用中心 | 是 |
-| P4 | 管理密码、外部访问开关、诊断导出 | 可选 |
+| P1 | 单页控制台：展示 + 改三项 + 测试音 + 保存生效 + `service_port` 接进应用中心 | 是，一次做完 |
+
+**不再拆成"只读 / 可写"两期**——界面只有一个，拆开做等于同一个页面写两遍，中间还得维护一个半成品。
 
 P0 独立于应用化，**先做**——如果 `LANG` 那招不成立，整个"中文广播名"的需求都得改方案（退回改 C 源码，工作量翻倍）。
 
@@ -186,6 +184,6 @@ P0 独立于应用化，**先做**——如果 `LANG` 那招不成立，整个"�
 ## 8. 顺带要改的
 
 - `manifest` 加 `service_port = 8790`，`fnpack.json` 的 `service_port` 同步填上，否则应用中心不出现「打开」按钮。
-- `cmd/main` 的 `do_start`/`do_stop`/`status` 要管两个 pidfile，`status` 的语义改为「渲染器在跑就 0」。
-- 卸载向导里问一句「是否保留配置」，`TRIM_PKGVAR` 目录删不删。
+- `cmd/main` 新增 `restart-renderer` 子命令；`do_start` 拉起两个进程、写两个 pidfile；`do_stop` 两个都收（先渲染器后控制台）。
+- `status` 仍只看渲染器：渲染器在跑就 exit 0。控制台意外退出不该让应用中心以为整个应用挂了。
 - `README` 增加一节「装好后怎么进设置页」。

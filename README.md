@@ -140,6 +140,19 @@ git add -A && git commit -m "release v1.0.1" && git push
 
 `update-fnpack.py` 会把新的 sha256 和文件大小写回 `fnpack.json`，漏了这一步客户端会因为哈希对不上而拒绝安装。
 
+### 两个 fpk 的关系
+
+仓库里会出现两个功能完全相同、但哈希不同的包，别混用：
+
+| 位置 | 来源 | 谁在用 |
+|---|---|---|
+| `dist/*.fpk` | 提交进仓库的版本 | **`fnpack.json` 的相对路径指向它**，FnDepot 装的是这个 |
+| Release 附件 | CI 在 `debian:12` 容器里重新编译的 | 想直接下载的人 |
+
+两边是分别编译的，二进制里嵌的构建路径不同，所以 sha256 必然不一样。`fnpack.json` 记的是 `dist/` 那个。**换包必须同步更新 `fnpack.json`**，否则客户端校验直接拒装。
+
+CI 用容器而非宿主机编译，是因为 GitHub runner 镜像预装了一堆包，`libgstreamer1.0-dev` 会和 `libunwind-dev` 的版本约束打架（`held broken packages`）。用 `debian:12` 容器既绕开这个坑，又让 glibc 和 fnOS 精确对齐——产物最高只要求 `GLIBC_2.34`，fnOS 是 2.36，留有余量。
+
 ## 排障
 
 | 症状 | 先查什么 |

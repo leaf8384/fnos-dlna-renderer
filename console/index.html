@@ -35,19 +35,10 @@
     flex-direction: column;
     gap: 12px;
   }
-  /* ---- 头部 ---- */
-  header { display: flex; align-items: center; gap: 11px; flex: none; }
-  .logo {
-    width: 38px; height: 38px; flex: none;
-    border-radius: 11px;
-    background: linear-gradient(160deg, var(--brand), var(--brand-dark));
-    display: grid; place-items: center;
-    box-shadow: 0 4px 12px rgba(71,120,255,.26);
-  }
-  .logo svg { width: 21px; height: 21px; }
-  h1 { font-size: 17px; margin: 0; letter-spacing: .2px; }
-  .sub { font-size: 12px; color: var(--text-3); margin-top: 1px; }
-  header .spacer { flex: 1; }
+  /* ---- 头部 ----
+     飞牛是带标题栏的内嵌窗口，标题和图标已经在标题栏上写着了，
+     页面里再画一遍 h1 + logo 就是重复，所以页头整体去掉，
+     运行状态挪进右侧卡片的标题行。 */
   .badge {
     display: inline-flex; align-items: center; gap: 6px;
     padding: 5px 11px; border-radius: 999px;
@@ -76,10 +67,12 @@
     min-height: 0;
   }
   .card h2 {
+    display: flex; align-items: center; gap: 8px;
     font-size: 11.5px; font-weight: 600; letter-spacing: .5px;
     color: var(--text-3); text-transform: uppercase;
     margin: 0 0 12px; flex: none;
   }
+  .card h2 .badge { margin-left: auto; text-transform: none; letter-spacing: 0; }
 
   /* ---- 正在播放 ---- */
   /* 窗口被拉高时，把播放区整体垂直居中，避免全挤在顶部留一大片白 */
@@ -229,22 +222,6 @@
 </head>
 <body>
 
-<header>
-  <div class="logo">
-    <svg viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-      <path d="M11 5 6 9H3v6h3l5 4V5z"/>
-      <path d="M15.5 8.5a5 5 0 0 1 0 7"/>
-      <path d="M18.5 5.5a9 9 0 0 1 0 13"/>
-    </svg>
-  </div>
-  <div>
-    <h1>DLNA 音频桥</h1>
-    <div class="sub" id="devsub">DLNA / UPnP 音频渲染器</div>
-  </div>
-  <div class="spacer"></div>
-  <span class="badge off" id="badge"><span class="dot"></span><span id="badgetext">读取中</span></span>
-</header>
-
 <main>
   <!-- 左：正在播放 -->
   <section class="card">
@@ -282,7 +259,7 @@
 
   <!-- 右：设备设置 -->
   <section class="card">
-    <h2>设备设置</h2>
+    <h2>设备设置<span class="badge off" id="badge"><span class="dot"></span><span id="badgetext">读取中</span></span></h2>
     <div class="settings-body">
     <div class="field">
       <label for="name">广播名（手机上显示的名字）</label>
@@ -354,7 +331,6 @@
       var on = !!s.running;
       $('badge').className = 'badge ' + (on ? 'on' : 'off');
       $('badgetext').textContent = on ? '运行中' : '已停止';
-      $('devsub').textContent = s.friendly_name || 'DLNA 音频渲染器';
       $('name').value = s.friendly_name || '';
       $('footmeta').textContent = 'v' + s.version + ' · ' + s.listen_addr +
         ' · ' + (s.audiodev || '');

@@ -187,6 +187,30 @@ sudo appcenter-cli start dlna-renderer
 sudo appcenter-cli status dlna-renderer     # → running
 ```
 
+### 桌面入口 / 图标的三个必填项（漏一个就出怪现象）
+
+桌面图标和窗口标题栏图标**不是同一份数据**，分别来自两个地方：
+
+| 位置 | 来源 | 缺了会怎样 |
+|---|---|---|
+| 全部应用里的桌面图标 | `<安装目录>/target/ui/images/icon_*.png`（`ui/config` 里的 `icon`） | 图标空白 |
+| 窗口标题栏的小图标 | **`app_service.icon`**（库里的一列，形如 `ui/images/icon_{0}.png`） | 请求 `/app-center-static/serviceicon/<app>/?size=256` **404** |
+| 窗口标题 | `app_service.title` | 标题栏显示 appname |
+
+`app_service.icon` **不会被「手工铺文件」补上** —— 它是安装时从 `ui/config` 灌进库的。
+手工登记应用时必须一起写，否则窗口标题栏那个小图标永远是坏的：
+
+```bash
+sudo -u postgres psql -d appcenter -c \
+  "update app_service set icon='ui/images/icon_{0}.png' where app_id=(select id from app where app_name='dlna-renderer')"
+```
+
+`{0}` 由后端按请求的 `?size=` 替换（`ui/images/icon_256.png` 这种）。
+所以 `ui/images/` 下**每种尺寸都要有文件**，缺某个尺寸时那个按钮位置就是空白。
+
+改完不一定立刻生效，应用中心会把这份列表缓存在内存里；实在不刷新再重启
+`trim_app_center`（**注意：它会把所有应用重启一遍**，别在放歌的时候干）。
+
 **卸载会连 `/vol1/@appdata/dlna-renderer`（配置 + 音量存档 + 日志）一起删掉**，
 真要走 Web UI 卸载前先 `sudo cp -a /vol1/@appdata/dlna-renderer /vol1/@appdata/dlna-renderer.backup`。
 

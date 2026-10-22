@@ -11,44 +11,36 @@ permissions:
 
 jobs:
   build:
-    # 构建机 glibc 必须不高于目标机。Ubuntu 22.04 是 2.35，
-    # Debian 12 (fnOS 底座) 是 2.36，所以这里编出来的包能在 fnOS 上跑。
     runs-on: ubuntu-22.04
 
     steps:
       - uses: actions/checkout@v4
 
-      - name: 安装构建依赖
+      # 不用宿主机的 apt 直接装依赖：runner 镜像预装了一堆包，
+      # libgstreamer1.0-dev 会撞上 libunwind-dev 的版本约束（held broken packages）。
+      # 更关键的是，我们要的产物是跑在 fnOS 上的 —— 而 fnOS 底座就是 Debian 12。
+      # 直接在 debian:12 容器里编译，glibc 2.36 精确对齐，不会出现
+      # "GLIBC_2.xx not found"，也不受 runner 镜像污染。
+      - name: 在 Debian 12 容器内构建并打包
         run: |
-          set -x
-          # runner 的 apt 源偶尔会短暂异常，update 失败不该直接判死整个 job，
-          # 真正的依赖缺失留给 build.sh 去报，那里提示更准确。
-          sudo apt-get update -o Acquire::Retries=3 -y || echo "apt-get update 有非致命错误，继续"
-          sudo apt-get install -y --no-install-recommends \
-            build-essential autoconf automake libtool pkg-config \
-            libgstreamer1.0-dev
-          # libupnp 的 dev 包名在不同发行版间会变，按可用性择优
-          sudo apt-get install -y --no-install-recommends libupnp-dev || \
-            sudo apt-get install -y --no-install-recommends libupnp13-dev
-
-      - name: 依赖诊断
-        if: failure()
-        run: |
-          echo "--- apt 源 ---"
-          grep -rhE '^deb ' /etc/apt/sources.list /etc/apt/sources.list.d/ 2>/dev/null | head -20
-          echo "--- libupnp 相关可用包 ---"
-          apt-cache search libupnp || true
-          echo "--- gstreamer dev ---"
-          apt-cache policy libgstreamer1.0-dev || true
+          docker run --rm \
+            -v "${{ github.workspace }}:/src" \
+            -w /src \
+            debian:12 \
+            bash -c '
+              set -e
+              apt-get update
+              apt-get install -y --no-install-recommends \
+                build-essential autoconf automake libtool pkg-config \
+                libupnp-dev libgstreamer1.0-dev
+              bash scripts/build.sh
+              bash scripts/package-fpk.sh
+            '
+          # 容器里以 root 写出来的文件，把属主交还给 runner
+          sudo chown -R "$(id -u):$(id -g)" build dist
 
       - name: 校验 fnpack.json
-        run: python3 -c "import json,sys; json.load(open('fnpack.json')); print('fnpack.json 合法')"
-
-      - name: 构建
-        run: bash scripts/build.sh
-
-      - name: 打包 fpk
-        run: bash scripts/package-fpk.sh
+        run: python3 -c "import json; json.load(open('fnpack.json')); print('fnpack.json 合法')"
 
       - name: 回填 fnpack.json
         run: |

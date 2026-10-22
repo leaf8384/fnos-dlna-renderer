@@ -6,14 +6,20 @@
 
 | 项 | 值 |
 |---|---|
-| 部署方式 | systemd 裸装（`/usr/local/bin/gmediarender` + `gmediarender.service`） |
-| 网卡 | `enp5s0`（fnOS 虚拟机唯一 virtio 网卡） |
-| 声卡 | `plughw:CARD=PCH,DEV=0`（HDA Intel PCH，Intel 核显 HDMI/模拟输出） |
+| 部署方式 | **FPK 应用**（`appcenter-cli install-fpk -v 1`），2026-10-22 实测通过 |
+| 二进制 | `/vol1/@appcenter/dlna-renderer/gmediarender` |
+| 配置 | `/vol1/@appdata/dlna-renderer/renderer.conf` |
+| 音量存档 | `/vol1/@appdata/dlna-renderer/volume.state`（靠 `GMR_VOLUME_STATE` 环境变量重定向） |
+| 日志 | `/vol1/@appdata/dlna-renderer/renderer.log` + `control.log` + `install.log` |
+| 网卡 | `enp5s0`（`install_init` 自动探测默认路由出口） |
+| 声卡 | `plughw:CARD=PCH,DEV=0`（`install_init` 自动取 `aplay -l` 第一块卡，用名字不用编号） |
 | 显示名 | `Marshall` |
-| 音量存档 | `/var/lib/gmediarender/volume.state` |
-| 二进制 md5 | 见 `dist/` 或本机 `md5sum`，构建产物与仓库源码严格对应 |
 
 音箱是 Marshall Acton II，走 3.5mm AUX 接 fnOS 虚拟机的模拟输出。
+
+旧的 systemd 裸装仍在机器上（`gmediarender.service` 已 `disabled` + `inactive`），
+但二进制留在 `/usr/local/bin/gmediarender`，音量存档留在 `/var/lib/gmediarender/`。
+**两套不能同时跑**（抢同一块声卡），当前以 FPK 为准。
 
 ## 恢复路径
 
@@ -81,10 +87,45 @@ fpk 版同理，改 `renderer.conf` 后到应用中心停用再启用。
 
 ## 验证装好了没有
 
-1. 进程在跑：`systemctl is-active gmediarender` → `active`
+1. 进程在跑：`systemctl is-active gmediarender` → `active`（FPK 版用 `appcenter-cli status dlna-renderer`）
 2. SSDP 有监听：`ss -ulpn | grep 1900`
 3. 手机会看到设备：音乐 App 投屏列表里出现 `Marshall`
 4. 出声：随便投一首，`aplay -l` 确认声卡没被别的东西占着
+
+## FPK 真装验证记录（2026-10-22）
+
+不是"应该能跑"，是实际装上跑通了。留档备查：
+
+```
+$ appcenter-cli install-fpk dist/dlna-renderer_v1.0.0_x86.fpk -v 1
+$ appcenter-cli status
+dlna-renderer │ DLNA 音频桥 │ 1.0.0 │ running
+
+$ ps -o pid,args -p 27936
+/vol1/@appcenter/dlna-renderer/gmediarender -I enp5s0 -f Marshall \
+  --gstout-audiosink=alsasink --gstout-audiodevice=plughw:CARD=PCH,DEV=0 --logfile=stdout
+```
+
+- `install.log`：`依赖已满足` → `已生成默认配置` → `install_callback 完成`
+- `control.log`：`启动：iface=enp5s0 name=Marshall audio=plughw:CARD=PCH,DEV=0` / `已启动 (pid 27936)`
+- `renderer.log` error / fatal / cannot / failed 计数 **0**
+- SSDP：`0.0.0.0:1900` 与 `[::]:1900` 均 UNCONN 监听
+
+**切歌竞态回归（`tests/t7.py`，三轮 `Seek(0)` 紧跟 `SetAVTransportURI`）全部存活：**
+
+```
+[   5.5s] after seek+set #1 (/b.wav)  upnp=PLAYING  pos=0:00:01  dur=0:00:30  alsa=RUNNING
+[   9.5s] after seek+set #2 (/a.wav)  upnp=PLAYING  pos=0:00:01  dur=0:00:30  alsa=RUNNING
+[  13.5s] after seek+set #3 (/b.wav)  upnp=PLAYING  pos=0:00:01  dur=0:00:30  alsa=RUNNING
+```
+
+对应日志每轮都是 `Switch intent: state=3 want_play=1 (in a burst)` → `Switching to ... (target 4)`，
+即 400ms 合并窗口正确吸收了 Seek 与切歌的双重状态变更，`watchdog` / `rebuild` / `stream error` 均为 0 次。
+
+**两个已知非问题：**
+
+- `appcenter-cli start` 偶尔报 `[Error]Something wrong with appcenter: code 10500`，但应用实际已经 `starting → running`，进程正常。属 CLI 误报，不用管。
+- `volume.state` 新建时是 `60`，装完播放过后变 `90`（手机端调过），说明 `GMR_VOLUME_STATE` 环境变量重定向生效，存档落在 `@appdata` 而不是 `/var/lib`。
 
 ## 回退
 

@@ -94,6 +94,14 @@ do_start() {
 	# 音量存档放数据卷，卸载应用时跟着目录一起清掉，不残留到系统分区
 	export GMR_VOLUME_STATE="$VOLSTATE"
 
+	# GLib 用 G_OPTION_ARG_STRING 收 -f，会按当前 locale 转换 argv。
+	# 飞牛只注入 TRIM_SYS_LANGUAGE=zh-CN，这不是 glibc 认的变量，进程里没有任何
+	# LANG/LC_*，于是 glibc 落到 C locale，中文显示名会直接死在
+	# "Failed to initialize: Invalid byte sequence in conversion input"。
+	# 实测 LANG=C.UTF-8 / en_US.UTF-8 下中文名完全正常，所以这里强制 UTF-8。
+	# 改这里之前先确认：appcenter 拉起的环境里确实没有 LANG（用 /proc/PID/environ 看）。
+	export LANG=C.UTF-8 LC_ALL=C.UTF-8
+
 	cd "$VAR" || return 1
 	nohup "$BIN" \
 		-I "$IFACE" \

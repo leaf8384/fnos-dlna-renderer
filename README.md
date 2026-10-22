@@ -39,7 +39,7 @@ bash scripts/build.sh
 bash scripts/package-fpk.sh
 ```
 
-把 `dist/dlna-renderer_v1.0.0_x86.fpk` 传到 NAS，然后 **应用中心 → 设置 → 手动安装**。
+把 `dist/dlna-renderer_v1.0.1_x86.fpk`（或 Release 里的最新版）传到 NAS，然后 **应用中心 → 设置 → 手动安装**。
 
 装完会：自动补齐 GStreamer 组件 → 生成配置 → 拉起进程。手机投屏列表里出现 `Marshall`。
 
@@ -72,6 +72,10 @@ AUDIODEV=plughw:CARD=PCH,DEV=0                # ALSA 设备名，用名字不用
 ```
 
 `AUDIODEV` 一定要写 **CARD 名**（`PCH`）而不是编号（`hw:0`）—— 重启后 card 编号会变，名字不会。
+
+`FRIENDLY_NAME` 可以写中文（如 `客厅音箱`）。飞牛拉起应用的环境里**没有任何 `LANG`**（只有它自己的 `TRIM_SYS_LANGUAGE=zh-CN`，glibc 不认），
+所以 `cmd/main` 里显式 `export LANG=C.UTF-8 LC_ALL=C.UTF-8`。少了这一行，中文名会直接死在
+`Failed to initialize: Invalid byte sequence in conversion input`。自己改启动脚本时别删掉。
 
 查可用设备：
 

@@ -23,6 +23,18 @@
       "is_docker": false,
       "service_port": "8790",
       "releases": {
+        "1.1.5": {
+          "changelog": "修「一首歌自然播完后声卡不释放」。播到曲末时渲染器只把状态汇报成已停止，却没有关闭音频设备，声卡一直被占着：设置页的「测试音」报设备忙，此时再点停止也救不回来，只能重启应用。现在这条路径补上了设备释放，播完即让出声卡。",
+          "updated_at": "2026-10-23T02:05:00+08:00",
+          "os_min_version": "1.0.0",
+          "packages": {
+            "x86": {
+              "download_url": "https://github.com/leaf8384/fnos-dlna-renderer/releases/download/v1.1.5/dlna-renderer_v1.1.5_x86.fpk",
+              "sha256": "0",
+              "size": 0
+            }
+          }
+        },
         "1.1.4": {
           "changelog": "修桌面入口的配置写法。之前 ui/config 用花括号占位符写标题，飞牛不认，应用设置里标题会原样显示成一串占位符；访问地址写成冒号加端口会被当成路径，点开窗口直接 404。现在改成字面标题 + 独立的 port=8790 + url=/。",
           "updated_at": "2026-10-23T01:36:00+08:00",

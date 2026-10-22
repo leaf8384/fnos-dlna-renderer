@@ -129,6 +129,29 @@
 - [x] ~~本地/远端 git 历史分叉~~ —— 2026-10-22 已解决。原因不是真分叉：用 Git Data API 推送时远端 main 被改写成同内容、不同 sha 的提交（`53b3486`），且漏掉了 `docs/app-console-plan.md`。`git fetch` 后用 `git reset --soft origin/main` 对齐，再把漏的文件重新提交上去。
 - [x] ~~fpk 未在飞牛应用中心真装验证~~ —— 2026-10-22 已真装通过，详见 `docs/DEPLOY.md` 的「FPK 真装验证记录」。切歌竞态回归三轮全过。
 - [x] ~~`-I` 写死在配置里，换网卡/改枚举后进程 running 但手机搜不到~~ —— 1.1.0 起可在设置界面直接改网卡，「改完重启」由 `cmd/main` 统一处理
+- [x] ~~**EOS 自然播完不释放 alsasink（声卡被永久占住）**~~ —— **已修，v1.1.5（2026-10-23）**，
+      `patches/0003-eos-release-audio-device.patch`（EOS 无 next uri 分支补 `set_state(READY)`）。
+      下面是当初的排查记录，留着备查 ——
+
+      ```c
+      } else if (play_trans_callback_) {
+          play_trans_callback_(PLAY_STOPPED);      // ← 只回调，没有 set_state(READY)
+      }
+      ```
+
+      对比上面 `gs_next_uri_ != NULL` 的续播分支：那条有 `set_state(READY)` → 换 uri → `set_state(PLAYING)`，
+      所以**换歌会重开设备、`hw_ptr` 归零**；而**播到自然结束**只回了个状态回调，pipeline 停在 EOS 态，
+      alsasink 不释放设备，一直以 44.1kHz 往 ALSA 喂静音。
+
+      实测证据（`/proc/asound/.../status`）：API 已报 `STOPPED / has_media=false / uri=""`，
+      但 `state=RUNNING`、`owner_pid=47065`（渲染器自己）、`hw_ptr` 每 3 秒稳定 +132468 帧、`delay` 恒定 ~8500。
+      **此时 `aplay -D plughw:CARD=PCH,DEV=0` 报 `Device or resource busy`** → 控制台「测试音」在 STOPPED 态必然失败。
+      **已经 STOPPED 后再发 SOAP `Stop` 也救不回来**（空操作，实测无效），只能重启渲染器。
+
+      修法（v1.1.5 已落地）：EOS 无 next uri 分支补一行 `gst_element_set_state(player_, GST_STATE_READY);`
+      （用 READY 不用 NULL，保 pipeline 少一次重建）。**实际行号要按打过 0001 之后的源码算：`output_gstreamer.c:719-721`**
+      （裸源码里在 281 附近，0001 在文件前部插了 27 行，别拿裸源码行号去对）。
+      连带：控制台读 pcm 判 `RUNNING` 的「声卡占用」提示在这种状态下属误报，修完 C 才根治。
 - [ ] 跨 Debian 大版本升级后 `libupnp.so.13` SONAME 变化会导致 `error while loading shared libraries`
 - [ ] **开机自启机制未查清**：`manifest` 里没有相关字段，`trim_app_cgi` 查 `dlna-renderer` 显示 `disabled`，但官方应用重启后都能自己起来。目前重启后渲染器确实在跑（实测），但**不清楚是谁拉起来的**，将来若出现「重启后不自动广播」需要从这里查。
 - [ ] `description.xml` 缺 `dlna:X_DLNADOC`（P0 遗留），要改 `upnp_device.c` 的 `generate_desc()` 并**重新编译**（仓库里没有 `src/device-desc.xml`，别去找）。当前网易云可用，先不动。
@@ -137,7 +160,17 @@
 ## 未决策
 
 - Marshall Acton II 待机 20 分钟后能否被 AUX/DLNA 唤醒。官方只对 III 代承诺。唤不醒的话要么加静音保活流，要么接受手动开机。
-- **「手机切回本机播放，NAS 还在响」要不要兜底**。抓包证明网易云切走时**一个包都不发**（没有 `Stop` 也没有 `Pause`），这是 DLNA 投屏的固有模型——纯音频渲染器没有会话回收机制，只能继续拉到流结束。可选方案：① 什么都不做，用设置页的「停止」按钮手工停（已可用）；② 长时间没收到任何 UPnP 指令且无进度变化就自动 `Stop`。②有误杀风险（用户就是想让它放完），暂未采用。
+- ~~**「手机切回本机播放，NAS 还在响」要不要兜底**~~ —— **已实测结案（2026-10-23 02:00），结论是「不用兜底」**。
+  双证据（渲染器日志 + `tcpdump` 抓 49494）确认：切走瞬间客户端**连轮询都停**，不是只停控制指令。
+  抓包按秒统计：`01:47:55–01:48:08` 每秒 **18–20 个入向新连接**（全是 `GetPositionInfo`，`Connection: close`
+  **不复用连接**），最后一个包 `01:48:09.606`，之后**零请求**；渲染器日志同期只有 2 行 `cmd_obtain_variable`。
+  而同一时刻 position 从 0:00:40 一路走到 0:03:55 才 EOS → **切走后确实继续响满剩余 3 分 15 秒**，
+  然后自己 `STOPPED`、URI 清空、`CurrentTransportActions: PLAY`，**不续播不循环**。
+  所以影响范围 = 本曲剩余时长，不是无限播。**决定：不做「失联自动停」**（误杀风险 > 收益，
+  且锁屏/后台时客户端同样会停轮询），沿用设置页的手工「停止」。
+  **教训：别拿 `/api/now` 当「客户端是否还活着」的探针** —— 控制台处理该请求时自己会向渲染器发
+  `GetVolume`，日志里因此冒出 `cmd_obtain_variable`，会把自己的采样误判成客户端轮询（第一次就是这么翻车的）。
+  正确探针是「停掉所有本地请求后看日志行数是否增长」或直接抓包。
 
 ## 明确不做
 

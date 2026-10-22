@@ -1,0 +1,23 @@
+--- a/src/output_gstreamer.c
++++ b/src/output_gstreamer.c
+@@ -716,8 +716,18 @@
+ 			if (play_trans_callback_) {
+ 				play_trans_callback_(PLAY_STARTED_NEXT_STREAM);
+ 			}
+-		} else if (play_trans_callback_) {
+-			play_trans_callback_(PLAY_STOPPED);
++		} else {
++			/* Natural end of the stream: hand the audio device back.
++			 * Without this the playbin stays in the EOS state and
++			 * alsasink keeps the ALSA device open, feeding silence at
++			 * full rate.  `aplay` then fails with "Device or resource
++			 * busy" and the console cannot play its test tone.
++			 * READY (rather than NULL) keeps the pipeline alive, so the
++			 * next SetAVTransportURI only has to go back to PLAYING. */
++			gst_element_set_state(player_, GST_STATE_READY);
++			if (play_trans_callback_) {
++				play_trans_callback_(PLAY_STOPPED);
++			}
+ 		}
+ 		break;
+ 

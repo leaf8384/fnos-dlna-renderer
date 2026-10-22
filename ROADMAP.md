@@ -1,6 +1,6 @@
 # 未来计划
 
-> 记录于 2026-10-22。当前版本 **1.0.1**（1.0.0 已稳定运行：单曲/连切/暂停后切/EOS 重播/音量记忆 全部实测通过；1.0.1 修中文设备名），**暂无必须做的事**，以下按优先级排列，做到哪算哪。
+> 记录于 2026-10-22，更新于 2026-10-23。当前版本 **1.1.0**（1.0.0 稳定运行；1.0.1 修中文设备名；1.1.0 新增网页设置界面），**暂无必须做的事**，以下按优先级排列，做到哪算哪。
 > 应用化设计的完整方案见 [`docs/app-console-plan.md`](app-console-plan.md)。
 
 ## P0 · 待验证（决定后续路线，30 分钟）
@@ -25,24 +25,34 @@
       对照 MiCast-Go 的实现，它写了 `<dlna:X_DLNADOC>DMR-1.50</dlna:X_DLNADOC>`，我们上游没有（已 grep 确认）。这是"某些国产 App 搜不到设备"的可疑原因，补上就能验证。
       改的是 `src/device-desc.xml`，configure 时被打进二进制，必须重新编译，不能运行时替换。
 
-## P1 · 单页控制台（唯一要做的一块）
+## P1 · 单页控制台 · **已完成（v1.1.0，2026-10-23）**
 
-一个页面搞定「看 + 改 + 生效」，不再分只读/可写两期。
+一个页面搞定「看 + 改 + 生效」，不分只读/可写两期。设计稿见 [`docs/app-console-plan.md`](app-console-plan.md)。
 
-- [ ] `dlna-console`（Go 单文件 + `//go:embed` 单页），监听 `:8790`
-- [ ] `manifest` / `fnpack.json` 填 `service_port = 8790`，应用中心出现「打开」
-- [ ] 页面（同一个界面里全部搞定）：
-      - 运行状态 + 版本
-      - **广播名**（文本框）
-      - **声卡**（下拉，`aplay -l` 枚举成 `ALC887-VD Analog` / `HDMI 0` 这种可读形式）
-      - **网卡**（下拉，`ip -br link` 过滤虚拟网卡，标出哪张有默认路由）
-      - 「播放测试音」按钮（`aplay` 放 2 秒正弦波，不依赖 GStreamer）
-      - 「保存并重启」按钮
-- [ ] 保存流程：校验 → 原子写 `renderer.conf` → `cmd/main restart-renderer` → 嗅探 1900 的 NOTIFY 确认新名字已广播 → 失败回传 `renderer.log` 末 20 行
-- [ ] `cmd/main` 增加 `restart-renderer` 子命令（**只**重启渲染器，不动控制台），启动参数只在这一处维护，避免控制台里另写一份导致漂移
-- [ ] `cmd/main start` 管两个 pidfile（渲染器 + 控制台一起起落）
-- [ ] `UDN` 独立存储，改名不产生幽灵设备
-- [ ] 声卡占用检测（`fuser /dev/snd/pcmC*D*p`），占用时提示而非静默失败
+- [x] **`dlna-console`**（Go 单文件 + `//go:embed` 单页），默认监听 `:8790`
+      `CGO_ENABLED=0` 静态二进制 5.9 MB，不依赖目标机 libc → **Debian 12 自带 Go 1.19 即可编译，不需要 Docker**
+- [x] **`manifest` / `fnpack.json` 填 `service_port = 8790`**，应用中心出现「打开」按钮
+- [x] **页面内容**（同一界面全部搞定）
+      - 运行状态 + 版本 + PID + 监听地址 + 当前配置
+      - **广播名**（文本框，**中文实测可用**，限 32 字符）
+      - **声卡**（下拉，`aplay -l` 枚举成 `ALC887-VD Analog` 这种可读形式，**过滤 `pcsp` 主板蜂鸣器**）
+      - **网卡**（下拉，`ip -br link` 枚举，标出哪张走默认路由）
+      - **「播放测试音」**（纯 stdlib 合成 2 秒 440Hz WAV 喂给 `aplay`，不依赖 GStreamer；首尾 50ms 淡入淡出防爆音）
+      - **「保存并重启」**
+- [x] **保存流程**：白名单校验 → 原子写 `renderer.conf` → `cmd/main restart-renderer` → **真去拉 `description.xml` 比对 `friendlyName`** → 失败回传 `renderer.log` 末 25 行
+      实测保存到生效 **2.75 秒**。这里刻意不用「嗅探 1900 的 NOTIFY」——要抓组播包得开混杂监听，而 HTTP 拉一次描述文件既准确又不需要特权。
+- [x] **`cmd/main` 增加 `restart-renderer` 子命令**（**只**重启渲染器，不动控制台）
+      `-I / -f / -u / --gstout-*` / `GMR_VOLUME_STATE` **只在 `cmd/main` 里写一份**，控制台通过调它间接生效，不自己 spawn，从根上杜绝两处参数漂移。
+- [x] **`cmd/main start` 管两个 pidfile**（`pid` + `console.pid`），一起起落；`status` 仍只看渲染器，控制台挂掉不影响应用中心显示「运行中」
+- [x] **`UDN` 独立存储**（`renderer.conf` 的 `UDN=`），改名不产生幽灵设备
+- [x] **声卡占用检测**：读 `/proc/asound/cardN/pcmMp/sub0/status` 判 `RUNNING`
+      计划里写的是 `fuser /dev/snd/pcmC*D*p`，实测**不可用**——渲染器自己就占着设备，`fuser` 分不清「自己占」和「别人占」；查 PCM 状态字符串才能判断是否真在出声。
+
+### 安全边界（重要）
+
+- **只绑内网 IPv4**，绝不 `0.0.0.0`：飞牛会下发公网 IPv6，控制台以 **root** 跑，暴露出去等于把根权限挂到公网上。启动时先解析网卡 IPv4 再 `DLNA_BIND=`。
+- **所有入参白名单校验**：不存在的网卡名、不存在的声卡设备、空名字、`;reboot` 这类注入串一律 `400`；GET 打 POST 接口返 `405`。
+- `renderer.conf` 最终会被 shell `.` source，值里的 `$` / 反引号 / 引号 / 反斜杠写入前全部转义。
 
 ### 不做：控制台内的开关
 
@@ -61,8 +71,10 @@
 - [x] ~~推 GitHub~~ —— 已上 `github.com/leaf8384/fnos-dlna-renderer`，v1.0.0 已发布，CI 用 `debian:12` 容器编译（40 秒通过）
 - [x] ~~本地/远端 git 历史分叉~~ —— 2026-10-22 已解决。原因不是真分叉：用 Git Data API 推送时远端 main 被改写成同内容、不同 sha 的提交（`53b3486`），且漏掉了 `docs/app-console-plan.md`。`git fetch` 后用 `git reset --soft origin/main` 对齐，再把漏的文件重新提交上去。
 - [x] ~~fpk 未在飞牛应用中心真装验证~~ —— 2026-10-22 已真装通过，详见 `docs/DEPLOY.md` 的「FPK 真装验证记录」。切歌竞态回归三轮全过。
-- [ ] `-I` 写死在配置里，换网卡/改枚举后进程 running 但手机搜不到 → 应用化后可根治
+- [x] ~~`-I` 写死在配置里，换网卡/改枚举后进程 running 但手机搜不到~~ —— 1.1.0 起可在设置界面直接改网卡，「改完重启」由 `cmd/main` 统一处理
 - [ ] 跨 Debian 大版本升级后 `libupnp.so.13` SONAME 变化会导致 `error while loading shared libraries`
+- [ ] **开机自启机制未查清**：`manifest` 里没有相关字段，`trim_app_cgi` 查 `dlna-renderer` 显示 `disabled`，但官方应用重启后都能自己起来。目前重启后渲染器确实在跑（实测），但**不清楚是谁拉起来的**，将来若出现「重启后不自动广播」需要从这里查。
+- [ ] `description.xml` 缺 `dlna:X_DLNADOC`（P0 遗留），要在 `src/device-desc.xml` 里加并**重新编译**，不能运行时替换。当前网易云可用，先不动。
 
 ## 未决策
 

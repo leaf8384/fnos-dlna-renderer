@@ -51,10 +51,14 @@ if [ ! -f "$CONF" ]; then
 
 	cat >"$CONF" <<EOF
 # dlna-renderer 配置
-# 改完生效：\$TRIM_APPDEST/../cmd/main stop && cmd/main start
-# 也可以直接在应用中心里停用再启用。
+# 推荐用设置界面改（应用中心 → 打开）：http://<NAS 地址>:8790
+# 手改也可以，改完在应用中心停用再启用。
 
-# 手机投屏列表里显示的名字
+# 设备唯一标识。手机靠它认"这是同一台设备"，改名千万别动它，
+# 否则手机会多出一条幽灵设备记录。留空则由 gmediarender 用自己的默认值。
+UDN="uuid:GMediaRender-1_0-000-000-002"
+
+# 手机投屏列表里显示的名字，可以用中文
 FRIENDLY_NAME=Marshall
 
 # 绑定网卡。留空则自动探测默认路由出口网卡。

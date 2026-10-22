@@ -31,8 +31,11 @@ VERSION=$(manifest_value version)
 say "检查输入"
 BIN=$(find "$BUILD_DIR" -maxdepth 3 -name gmediarender -type f -perm -u+x 2>/dev/null | head -1)
 [ -n "$BIN" ] || die "找不到构建产物，先执行：bash scripts/build.sh"
+CONSOLE="${BUILD_DIR}/dlna-console"
+[ -f "$CONSOLE" ] || die "找不到设置界面二进制，先执行：bash scripts/build-console.sh"
 echo "    $APPNAME v$VERSION"
 echo "    $BIN"
+echo "    $CONSOLE"
 
 say "准备暂存目录"
 STAGE="${BUILD_DIR}/fpk-stage"
@@ -43,6 +46,7 @@ cp -a "${FPK_SRC}/." "$STAGE/"
 say "组装 app/"
 mkdir -p "$STAGE/app"
 install -m 0755 "$BIN" "$STAGE/app/gmediarender"
+install -m 0755 "$CONSOLE" "$STAGE/app/dlna-console"
 
 # 飞牛安装时把 app.tgz 解开放到 TRIM_APPDEST，所以要带 ./ 前缀打成归档
 tar czf "$STAGE/app.tgz" -C "$STAGE/app" --owner=0 --group=0 .

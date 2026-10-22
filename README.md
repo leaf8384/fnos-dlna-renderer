@@ -35,7 +35,8 @@ gmediarender 上游本身能跑，但用网易云投屏时有一批稳定的故�
 
 ```bash
 # 在 Linux 上构建，产物在 dist/
-bash scripts/build.sh
+bash scripts/build.sh          # 渲染器（C，需要 Debian 12 级别的 glibc 环境）
+bash scripts/build-console.sh  # 设置界面（Go，静态链接，有 go 就行）
 bash scripts/package-fpk.sh
 ```
 
@@ -57,11 +58,33 @@ sudo bash scripts/install-standalone.sh
 > 两种方式互斥。已经用 fpk 装了就别再跑脚本版，否则两个进程会抢同一块声卡。
 > 当前生产环境走的是**方式一（FPK）**，方式二仅作为应急回退保留。
 
+## 设置界面
+
+装好后在应用中心点这个应用的「打开」，或者直接访问 **`http://<NAS 地址>:8790`**。
+
+一个页面，三件事：
+
+- **广播名** —— 手机投屏列表里显示的名字，**支持中文**（如「客厅音箱」）
+- **输出声卡** —— 从 `aplay -l` 里枚举，选错的表现是「App 显示在播放但没声音」，所以旁边配了**测试音**按钮，点一下放 2 秒 440Hz
+- **广播网卡** —— 必须选手机所在网段那张，选错手机**根本搜不到设备**
+
+保存后会自动重启渲染器让配置生效，**正在播放的音乐会中断 1–2 秒**，这是正常的。
+界面会回报最终广播出去的名字（真去拉一次 `description.xml` 确认），失败时把 `renderer.log` 尾部贴出来，不用 SSH 翻日志。
+
+设计上的两个刻意选择：
+
+- **界面里不做启停开关**，启停一律走应用中心的「停用 / 启用」。这样不用维护 `ENABLED` 状态，也不会出现"应用重启后自动恢复广播"的怪事。代价是应用停用后设置页也进不去。
+- **渲染器的启动参数只写在 `cmd/main` 里**。控制台改完配置不自己 spawn，而是回调 `cmd/main restart-renderer`。否则两处参数迟早漂移，出现"应用中心重启正常、界面保存后没声音"。
+
+控制台以 root 运行（要执行 `aplay`/`ip`、写配置、重启进程），因此**只监听内网 IPv4**，不绑 `0.0.0.0` —— fnOS 会下发公网 IPv6，全绑等于把这个接口暴露到外面。
+
 ## 配置
+
+**优先用设置界面改**（`http://<NAS>:8790`），下面这些是手改的备选方式。
 
 | 部署方式 | 配置文件 | 改完生效方式 |
 |---|---|---|
-| FPK | `<应用数据目录>/renderer.conf` | 应用中心停用再启用 |
+| FPK | `<应用数据目录>/renderer.conf` | 应用中心停用再启用，或 `cmd/main restart-renderer` |
 | systemd | `/etc/default/dlna-renderer` | `systemctl restart gmediarender` |
 
 三个参数：
@@ -91,11 +114,15 @@ aplay -L | grep plughw
 ```bash
 # Debian / Ubuntu
 sudo apt install -y build-essential autoconf automake libtool pkg-config \
-                    libupnp-dev libgstreamer1.0-dev
+                    libupnp-dev libgstreamer1.0-dev golang-go
 
-bash scripts/build.sh              # 解压 → 打补丁 → autogen → configure → make
+bash scripts/build.sh              # 渲染器：解压 → 打补丁 → autogen → configure → make
+bash scripts/build-console.sh      # 设置界面：Go 静态编译，产物不依赖目标机 libc
 bash scripts/package-fpk.sh        # 组装成 fpk
 ```
+
+设置界面是纯标准库的 Go 程序，**`CGO_ENABLED=0` 静态链接**，所以在任何机器上交叉编译出来的都能直接跑在 fnOS 上
+（`GOOS=linux GOARCH=amd64`），不需要 Docker，也不用管目标机 glibc 版本。Debian 12 自带的 Go 1.19 就够。
 
 `build.sh` 打完补丁后会打印 `patch` 的输出，两个补丁都应该是 `succeeded`。
 

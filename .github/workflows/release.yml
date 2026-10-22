@@ -21,7 +21,10 @@ jobs:
       # 更关键的是，我们要的产物是跑在 fnOS 上的 —— 而 fnOS 底座就是 Debian 12。
       # 直接在 debian:12 容器里编译，glibc 2.36 精确对齐，不会出现
       # "GLIBC_2.xx not found"，也不受 runner 镜像污染。
-      - name: 在 Debian 12 容器内构建并打包
+      #
+      # 这一步只编 C 那部分。Go 写的控制台不在这里编——纯静态产物（CGO_ENABLED=0）
+      # 与目标机 libc 无关，用 setup-go 在宿主直接交叉编译即可，没必要进容器。
+      - name: 在 Debian 12 容器内编译渲染器（C）
         run: |
           docker run --rm \
             -v "${{ github.workspace }}:/src" \
@@ -34,10 +37,20 @@ jobs:
                 build-essential autoconf automake libtool pkg-config \
                 libupnp-dev libgstreamer1.0-dev
               bash scripts/build.sh
-              bash scripts/package-fpk.sh
             '
           # 容器里以 root 写出来的文件，把属主交还给 runner
-          sudo chown -R "$(id -u):$(id -g)" build dist
+          sudo chown -R "$(id -u):$(id -g)" build
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.22"
+          cache-dependency-path: console/go.mod
+
+      - name: 编译设置界面（Go 静态二进制）
+        run: bash scripts/build-console.sh
+
+      - name: 打包 fpk
+        run: bash scripts/package-fpk.sh
 
       - name: 校验 fnpack.json
         run: python3 -c "import json; json.load(open('fnpack.json')); print('fnpack.json 合法')"

@@ -2,11 +2,20 @@
 # dlna-renderer —— 生命周期控制
 #
 # 飞牛的调用约定：
-#   cmd/main start    成功 exit 0，失败 exit 1
-#   cmd/main stop     成功 exit 0，失败 exit 1
-#   cmd/main status   运行中 exit 0，未运行 exit 3
+#   cmd/main start              成功 exit 0，失败 exit 1
+#   cmd/main stop               成功 exit 0，失败 exit 1
+#   cmd/main status             运行中 exit 0，未运行 exit 3
+#   cmd/main restart-renderer   只重启渲染器（控制台改了配置后调它生效）
 #
 # 飞牛不用 systemd 管理第三方应用，所以这里自己拉起后台进程并维护 pid。
+#
+# 两个进程：
+#   gmediarender  渲染器本体，占 UPnP 端口 49494
+#   dlna-console  设置界面，监听 8790（manifest 里的 service_port）
+#
+# 一条铁律：**gmediarender 的启动参数只允许写在这个文件里**。
+# 控制台改完配置不许自己 spawn，必须回头调 `cmd/main restart-renderer`。
+# 否则参数两处维护，迟早出现"应用中心重启正常、界面保存后没声音"这种极难查的问题。
 
 set -u
 
@@ -18,11 +27,17 @@ APPNAME="dlna-renderer"
 
 VAR="${TRIM_PKGVAR}"
 BIN="${TRIM_APPDEST}/gmediarender"
+CONSOLE="${TRIM_APPDEST}/dlna-console"
 CONF="${VAR}/renderer.conf"
-PIDFILE="${VAR}/pid"
+PID_R="${VAR}/pid"
+PID_C="${VAR}/console.pid"
 LOGFILE="${VAR}/renderer.log"
+CLOG="${VAR}/console.log"
 CTLLOG="${VAR}/control.log"
 VOLSTATE="${VAR}/volume.state"
+
+CMDDIR="$(cd "$(dirname "$0")" && pwd)"
+MANIFEST="$(dirname "$CMDDIR")/manifest"
 
 mkdir -p "$VAR" 2>/dev/null
 
@@ -50,10 +65,16 @@ detect_audiodev() {
 	printf 'plughw:CARD=%s,DEV=0' "${name:-PCH}"
 }
 
+iface_ipv4() {
+	ip -4 -o addr show dev "$1" 2>/dev/null |
+		awk '{ for (i = 1; i < NF; i++) if ($i == "inet") { split($(i + 1), a, "/"); print a[1]; exit } }'
+}
+
 load_conf() {
 	IFACE=""
 	AUDIODEV=""
 	FRIENDLY_NAME="Marshall"
+	UDN=""
 	if [ -f "$CONF" ]; then
 		. "$CONF"
 	fi
@@ -62,34 +83,55 @@ load_conf() {
 	[ -z "$FRIENDLY_NAME" ] && FRIENDLY_NAME="Marshall"
 }
 
+# ---- pid 管理 ---------------------------------------------------------
 pid_of() {
 	local p
-	[ -f "$PIDFILE" ] || return 1
-	p=$(cat "$PIDFILE" 2>/dev/null)
+	[ -f "$1" ] || return 1
+	p=$(cat "$1" 2>/dev/null)
 	[ -n "$p" ] || return 1
 	printf '%s' "$p"
 }
 
 is_running() {
 	local p
-	p=$(pid_of) || return 1
+	p=$(pid_of "$1") || return 1
 	kill -0 "$p" 2>/dev/null
 }
 
-# ---- 动作 -------------------------------------------------------------
-do_start() {
-	if is_running; then
-		log "已在运行 (pid $(pid_of))"
+stop_pid() {
+	local pidfile="$1" label="$2" p n
+	if ! p=$(pid_of "$pidfile"); then
+		rm -f "$pidfile"
 		return 0
 	fi
+	log "停止${label} pid $p"
+	kill "$p" 2>/dev/null
+	for n in $(seq 1 50); do
+		kill -0 "$p" 2>/dev/null || break
+		sleep 0.1
+	done
+	if kill -0 "$p" 2>/dev/null; then
+		log "${label}超时未退出，强制结束 pid $p"
+		kill -9 "$p" 2>/dev/null
+		sleep 0.2
+	fi
+	rm -f "$pidfile"
+	return 0
+}
 
+# ---- 渲染器 -----------------------------------------------------------
+start_renderer() {
+	if is_running "$PID_R"; then
+		log "渲染器已在运行 (pid $(pid_of "$PID_R"))"
+		return 0
+	fi
 	if [ ! -x "$BIN" ]; then
 		log "启动失败：$BIN 不存在或不可执行"
 		return 1
 	fi
 
 	load_conf
-	log "启动：iface=$IFACE name=$FRIENDLY_NAME audio=$AUDIODEV"
+	log "启动渲染器：iface=$IFACE name=$FRIENDLY_NAME audio=$AUDIODEV"
 
 	# 音量存档放数据卷，卸载应用时跟着目录一起清掉，不残留到系统分区
 	export GMR_VOLUME_STATE="$VOLSTATE"
@@ -106,59 +148,111 @@ do_start() {
 	nohup "$BIN" \
 		-I "$IFACE" \
 		-f "$FRIENDLY_NAME" \
+		${UDN:+-u "$UDN"} \
 		--gstout-audiosink=alsasink \
 		--gstout-audiodevice="$AUDIODEV" \
 		--logfile=stdout \
 		>>"$LOGFILE" 2>&1 &
-	printf '%s' "$!" >"$PIDFILE"
+	local pid=$!
+	printf '%s' "$pid" >"$PID_R"
 
 	sleep 1
-	if is_running; then
-		log "已启动 (pid $(pid_of))"
+	if is_running "$PID_R"; then
+		log "渲染器已启动 (pid $pid)"
 		return 0
 	fi
 
-	log "启动失败：进程立即退出，日志尾部如下"
+	log "渲染器启动失败，日志尾部如下"
 	tail -n 20 "$LOGFILE" >>"$CTLLOG" 2>/dev/null
-	rm -f "$PIDFILE"
+	rm -f "$PID_R"
 	return 1
 }
 
-do_stop() {
-	local p n
-	if ! p=$(pid_of); then
-		rm -f "$PIDFILE"
-		log "未在运行"
+stop_renderer() {
+	stop_pid "$PID_R" "渲染器"
+}
+
+# ---- 控制台 -----------------------------------------------------------
+start_console() {
+	if is_running "$PID_C"; then
+		return 0
+	fi
+	if [ ! -x "$CONSOLE" ]; then
+		log "未找到 $CONSOLE，跳过控制台"
 		return 0
 	fi
 
-	log "停止 pid $p"
-	kill "$p" 2>/dev/null
-	for n in $(seq 1 50); do
-		kill -0 "$p" 2>/dev/null || break
-		sleep 0.1
-	done
-	if kill -0 "$p" 2>/dev/null; then
-		log "超时未退出，强制结束 pid $p"
-		kill -9 "$p" 2>/dev/null
-		sleep 0.2
+	load_conf
+	local ip
+	ip=$(iface_ipv4 "$IFACE")
+	[ -z "$ip" ] && ip=$(iface_ipv4 "$(detect_iface)")
+	if [ -z "$ip" ]; then
+		log "控制台跳过：找不到 $IFACE 的 IPv4"
+		return 1
 	fi
-	rm -f "$PIDFILE"
+
+	# 只绑内网 IPv4：fnOS 会下发公网 IPv6，绑 0.0.0.0 等于把 root 接口暴露出去
+	export DLNA_BIND="$ip"
+	export DLNA_PORT=8790
+	export DLNA_CMD_MAIN="${CMDDIR}/main"
+	export DLNA_MANIFEST="$MANIFEST"
+
+	cd "$VAR" || return 1
+	nohup "$CONSOLE" >>"$CLOG" 2>&1 &
+	local pid=$!
+	printf '%s' "$pid" >"$PID_C"
+
+	sleep 1
+	if is_running "$PID_C"; then
+		log "控制台已启动 (pid $pid) http://$ip:8790"
+		return 0
+	fi
+
+	log "控制台启动失败，日志尾部如下"
+	tail -n 10 "$CLOG" >>"$CTLLOG" 2>/dev/null
+	rm -f "$PID_C"
+	return 1
+}
+
+stop_console() {
+	stop_pid "$PID_C" "控制台"
+}
+
+# ---- 动作 -------------------------------------------------------------
+do_start() {
+	local rc=0
+	start_renderer || rc=1
+	# 控制台起不来不该让整个应用启动失败——播放才是主功能
+	start_console || true
+	return $rc
+}
+
+do_stop() {
+	# 先收渲染器：它占着声卡和 49494，控制台只是旁观者
+	stop_renderer
+	stop_console
 	return 0
+}
+
+do_restart_renderer() {
+	stop_renderer
+	start_renderer
 }
 
 case "${1:-}" in
 start) do_start ;;
 stop) do_stop ;;
+restart-renderer) do_restart_renderer ;;
 status)
-	if is_running; then
+	# 只看渲染器：控制台意外退出不该让应用中心以为整个应用挂了
+	if is_running "$PID_R"; then
 		exit 0
 	else
 		exit 3
 	fi
 	;;
 *)
-	echo "用法: $0 {start|stop|status}" >&2
+	echo "用法: $0 {start|stop|status|restart-renderer}" >&2
 	exit 1
 	;;
 esac

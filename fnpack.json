@@ -21,8 +21,20 @@
       "run_as": "root",
       "install_type": "",
       "is_docker": false,
-      "service_port": "",
+      "service_port": "8790",
       "releases": {
+        "1.1.0": {
+          "changelog": "新增网页设置界面：应用中心「打开」进入 http://<NAS>:8790，可改广播名（支持中文）、切换输出声卡与广播网卡，带测试音按钮，保存后自动重启渲染器生效。渲染器启动参数统一收敛到 cmd/main 的 restart-renderer，控制台不再另写一份。",
+          "updated_at": "2026-10-23T00:30:00+08:00",
+          "os_min_version": "1.0.0",
+          "packages": {
+            "x86": {
+              "download_url": "./dist/dlna-renderer_v1.1.0_x86.fpk",
+              "sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+              "size": 0
+            }
+          }
+        },
         "1.0.1": {
           "changelog": "修复中文设备名无法启动：飞牛拉起应用的环境里没有任何 LANG（只有 TRIM_SYS_LANGUAGE=zh-CN，glibc 不认），GLib 按 locale 转 argv 时落到 C locale，报 Invalid byte sequence。cmd/main 启动前显式 export LANG=C.UTF-8 LC_ALL=C.UTF-8，systemd unit 同步修。",
           "updated_at": "2026-10-22T23:45:00+08:00",

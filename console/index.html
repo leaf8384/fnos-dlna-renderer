@@ -1,0 +1,406 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="color-scheme" content="light">
+<title>DLNA 音频桥 · 设置</title>
+<style>
+  :root {
+    --brand: #4778ff;
+    --brand-dark: #3d5dff;
+    --bg: #f4f6fb;
+    --card: #ffffff;
+    --text: #1b1f2a;
+    --text-2: #5b6478;
+    --text-3: #8b93a5;
+    --line: #e6eaf2;
+    --ok: #16a34a;
+    --ok-bg: #e9f9ef;
+    --warn: #b45309;
+    --warn-bg: #fef6e7;
+    --err: #dc2626;
+    --err-bg: #fdeceb;
+    --radius: 14px;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; }
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font: 15px/1.6 -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC",
+          "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
+    -webkit-font-smoothing: antialiased;
+    padding: 24px 16px 56px;
+  }
+  .wrap { max-width: 680px; margin: 0 auto; }
+
+  /* ---- 头部 ---- */
+  header { display: flex; align-items: center; gap: 14px; margin-bottom: 22px; }
+  .logo {
+    width: 46px; height: 46px; flex: none;
+    border-radius: 13px;
+    background: linear-gradient(160deg, var(--brand), var(--brand-dark));
+    display: grid; place-items: center;
+    box-shadow: 0 6px 16px rgba(71,120,255,.28);
+  }
+  .logo svg { width: 26px; height: 26px; }
+  h1 { font-size: 19px; margin: 0; letter-spacing: .2px; }
+  .sub { font-size: 13px; color: var(--text-3); margin-top: 2px; }
+
+  /* ---- 卡片 ---- */
+  .card {
+    background: var(--card);
+    border-radius: var(--radius);
+    padding: 20px;
+    margin-bottom: 14px;
+    box-shadow: 0 1px 2px rgba(20,30,60,.04), 0 6px 20px rgba(20,30,60,.05);
+  }
+  .card h2 {
+    font-size: 13px; font-weight: 600; letter-spacing: .4px;
+    color: var(--text-3); text-transform: uppercase;
+    margin: 0 0 16px;
+  }
+
+  /* ---- 状态行 ---- */
+  .status { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
+  .badge {
+    display: inline-flex; align-items: center; gap: 7px;
+    padding: 6px 13px; border-radius: 999px;
+    font-size: 13px; font-weight: 600;
+  }
+  .badge .dot { width: 7px; height: 7px; border-radius: 50%; background: currentColor; }
+  .badge.on  { color: var(--ok);  background: var(--ok-bg); }
+  .badge.off { color: var(--err); background: var(--err-bg); }
+  .badge.on .dot { box-shadow: 0 0 0 3px rgba(22,163,74,.16); }
+  .devname { font-size: 17px; font-weight: 600; }
+  .meta { font-size: 12.5px; color: var(--text-3); margin-top: 10px; word-break: break-all; }
+
+  /* ---- 表单 ---- */
+  .field { margin-bottom: 20px; }
+  .field:last-of-type { margin-bottom: 8px; }
+  label { display: block; font-size: 13.5px; font-weight: 600; margin-bottom: 7px; }
+  .hint { font-size: 12.5px; color: var(--text-3); margin-top: 6px; line-height: 1.5; }
+  input[type=text], select {
+    width: 100%; padding: 11px 13px;
+    font: inherit; color: var(--text);
+    background: #fbfcfe;
+    border: 1px solid var(--line); border-radius: 10px;
+    outline: none; transition: border-color .15s, box-shadow .15s;
+    appearance: none;
+  }
+  select {
+    background-image: url("data:image/svg+xml;charset=utf-8,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='8'%3E%3Cpath d='M1 1.5L6 6.5L11 1.5' fill='none' stroke='%238b93a5' stroke-width='1.6' stroke-linecap='round'/%3E%3C/svg%3E");
+    background-repeat: no-repeat;
+    background-position: right 14px center;
+    padding-right: 38px;
+  }
+  input[type=text]:focus, select:focus {
+    border-color: var(--brand);
+    box-shadow: 0 0 0 3px rgba(71,120,255,.13);
+    background: #fff;
+  }
+  .counter { float: right; font-size: 12px; color: var(--text-3); font-weight: 400; }
+
+  /* ---- 按钮 ---- */
+  .row { display: flex; gap: 10px; flex-wrap: wrap; margin-top: 22px; }
+  button {
+    font: inherit; font-weight: 600; cursor: pointer;
+    border-radius: 10px; padding: 11px 20px;
+    border: 1px solid transparent;
+    transition: transform .08s, box-shadow .15s, background .15s;
+  }
+  button:active { transform: translateY(1px); }
+  button:disabled { opacity: .55; cursor: not-allowed; transform: none; }
+  .primary {
+    background: linear-gradient(160deg, var(--brand), var(--brand-dark));
+    color: #fff; box-shadow: 0 4px 14px rgba(71,120,255,.26);
+  }
+  .ghost { background: #fff; color: var(--text-2); border-color: var(--line); }
+  .ghost:hover { border-color: #cfd7e6; }
+  .spinner {
+    display: inline-block; width: 13px; height: 13px; vertical-align: -2px;
+    margin-right: 7px; border-radius: 50%;
+    border: 2px solid rgba(255,255,255,.4); border-top-color: #fff;
+    animation: spin .7s linear infinite;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+
+  /* ---- 提示条 ---- */
+  .note {
+    display: flex; gap: 9px; align-items: flex-start;
+    padding: 12px 14px; border-radius: 10px;
+    font-size: 13px; line-height: 1.55;
+  }
+  .note.info { background: #f2f6ff; color: #3b4a6b; }
+  .note.warn { background: var(--warn-bg); color: var(--warn); }
+  .note.ok   { background: var(--ok-bg);  color: var(--ok); }
+  .note.err  { background: var(--err-bg); color: var(--err); }
+  .note svg { width: 16px; height: 16px; flex: none; margin-top: 2px; }
+
+  /* ---- 日志 ---- */
+  pre {
+    background: #12161f; color: #d6dcea;
+    padding: 14px 16px; border-radius: 10px;
+    font: 12.5px/1.6 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    overflow-x: auto; margin: 0;
+    max-height: 300px; overflow-y: auto;
+    white-space: pre-wrap; word-break: break-all;
+  }
+  #result { margin-top: 16px; display: none; }
+  #result.show { display: block; }
+  .footer { text-align: center; font-size: 12px; color: var(--text-3); margin-top: 26px; line-height: 1.8; }
+  code { background: #eef1f7; padding: 1px 6px; border-radius: 5px; font-size: 12.5px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <header>
+    <div class="logo">
+      <svg viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round">
+        <rect x="5" y="2.5" width="14" height="19" rx="2.6"/>
+        <circle cx="12" cy="15.5" r="3.1"/>
+        <circle cx="12" cy="6.6" r=".9" fill="#fff" stroke="none"/>
+      </svg>
+    </div>
+    <div>
+      <h1>DLNA 音频桥</h1>
+      <div class="sub" id="subtitle">把 NAS 变成音箱的投放目标</div>
+    </div>
+  </header>
+
+  <!-- 状态 -->
+  <div class="card">
+    <h2>当前状态</h2>
+    <div class="status">
+      <div>
+        <div class="devname" id="devName">—</div>
+        <div class="meta" id="devMeta">读取中…</div>
+      </div>
+      <span class="badge off" id="badge"><span class="dot"></span><span id="badgeText">读取中</span></span>
+    </div>
+  </div>
+
+  <!-- 设置 -->
+  <div class="card">
+    <h2>设置</h2>
+
+    <div class="field">
+      <label for="name">广播名 <span class="counter" id="counter">0/32</span></label>
+      <input type="text" id="name" maxlength="32" placeholder="例如：客厅音箱" autocomplete="off">
+      <div class="hint">手机投屏列表里显示的名字，可以用中文。改完设备标识（UDN）不变，手机不会多出一条旧记录。</div>
+    </div>
+
+    <div class="field">
+      <label for="audiodev">输出声卡</label>
+      <select id="audiodev"></select>
+      <div class="hint">选错声卡的表现是「App 显示在播放，但音箱没声音」。拿不准就点下面的<b>测试音</b>逐个试。</div>
+    </div>
+
+    <div class="field">
+      <label for="iface">广播网卡</label>
+      <select id="iface"></select>
+      <div class="hint">必须选手机所在网段的那张，否则手机<b>根本搜不到设备</b>。改完手机上可能要 1–2 分钟才刷新，或者需要重开音乐 App。</div>
+    </div>
+
+    <div class="note warn">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
+        <circle cx="12" cy="12" r="9"/><path d="M12 8v5"/><circle cx="12" cy="16.5" r=".8" fill="currentColor" stroke="none"/>
+      </svg>
+      <span>保存会重启渲染器让配置生效，<b>正在播放的音乐会中断 1–2 秒</b>，这是正常的。</span>
+    </div>
+
+    <div class="row">
+      <button class="primary" id="saveBtn">保存并生效</button>
+      <button class="ghost" id="toneBtn">测试音</button>
+    </div>
+
+    <div id="result"></div>
+  </div>
+
+  <div class="footer">
+    停止 / 启动请用飞牛<b>应用中心</b>的「停用 / 启用」<br>
+    配置文件 <code>renderer.conf</code> · 端口 8790
+  </div>
+</div>
+
+<script>
+(function () {
+  var $ = function (id) { return document.getElementById(id); };
+  var state = null;
+
+  function api(path, opt) {
+    return fetch(path, opt).then(function (r) {
+      return r.json().then(function (j) {
+        if (!r.ok) { throw new Error(j.message || ('HTTP ' + r.status)); }
+        return j;
+      });
+    });
+  }
+
+  function setBadge(running) {
+    var b = $('badge');
+    b.className = 'badge ' + (running ? 'on' : 'off');
+    $('badgeText').textContent = running ? '运行中' : '已停止';
+  }
+
+  function showResult(kind, text, logTail) {
+    var box = $('result');
+    var icons = {
+      ok:   '<path d="M20 6L9 17l-5-5"/>',
+      err:  '<circle cx="12" cy="12" r="9"/><path d="M12 8v5"/><circle cx="12" cy="16.5" r=".8" fill="currentColor" stroke="none"/>',
+      warn: '<circle cx="12" cy="12" r="9"/><path d="M12 8v5"/><circle cx="12" cy="16.5" r=".8" fill="currentColor" stroke="none"/>'
+    };
+    var html = '<div class="note ' + kind + '">' +
+      '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">' +
+      (icons[kind] || icons.warn) + '</svg><span>' + text + '</span></div>';
+    if (logTail) {
+      html += '<pre style="margin-top:10px">' + escapeHtml(logTail) + '</pre>';
+    }
+    box.innerHTML = html;
+    box.className = 'show';
+  }
+
+  function escapeHtml(s) {
+    return String(s).replace(/[&<>"]/g, function (c) {
+      return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c];
+    });
+  }
+
+  function fillCards(cards, current) {
+    var sel = $('audiodev');
+    sel.innerHTML = '';
+    if (!cards.length) {
+      sel.innerHTML = '<option value="">没找到可用的声卡</option>';
+      return;
+    }
+    cards.forEach(function (c) {
+      var o = document.createElement('option');
+      o.value = c.value;
+      var label = c.name + ' · ' + c.chip;
+      if (c.busy) { label += '（正在使用）'; }
+      o.textContent = label;
+      if (c.value === current) { o.selected = true; }
+      sel.appendChild(o);
+    });
+    if (!current && cards.length) { sel.selectedIndex = 0; }
+  }
+
+  function fillIfaces(ifaces, current) {
+    var sel = $('iface');
+    sel.innerHTML = '';
+    if (!ifaces.length) {
+      sel.innerHTML = '<option value="">没找到可用的网卡</option>';
+      return;
+    }
+    ifaces.forEach(function (i) {
+      var o = document.createElement('option');
+      o.value = i.name;
+      var label = i.name + ' · ' + i.ipv4;
+      if (i.default) { label += '（默认路由）'; }
+      o.textContent = label;
+      if (i.name === current) { o.selected = true; }
+      sel.appendChild(o);
+    });
+    if (!current) {
+      for (var k = 0; k < ifaces.length; k++) {
+        if (ifaces[k].recommended) { sel.selectedIndex = k; break; }
+      }
+    }
+  }
+
+  function updateCounter() {
+    $('counter').textContent = $('name').value.length + '/32';
+  }
+
+  function load() {
+    return Promise.all([api('/api/state'), api('/api/devices')]).then(function (res) {
+      state = res[0];
+      var devices = res[1];
+
+      $('devName').textContent = state.friendly_name || '（未命名）';
+      $('devMeta').textContent = '版本 ' + state.version +
+        ' · 网卡 ' + (state.iface || '?') +
+        ' · 声卡 ' + (state.audiodev || '?');
+      $('subtitle').textContent = 'PID ' + (state.pid || '—') + ' · 控制台 ' + state.listen_addr;
+      setBadge(state.running);
+
+      $('name').value = state.friendly_name || '';
+      updateCounter();
+      fillCards(devices.cards, state.audiodev);
+      fillIfaces(devices.ifaces, state.iface);
+    }).catch(function (e) {
+      showResult('err', '读取失败：' + escapeHtml(e.message));
+    });
+  }
+
+  $('name').addEventListener('input', updateCounter);
+
+  $('toneBtn').addEventListener('click', function () {
+    var btn = this;
+    var dev = $('audiodev').value;
+    if (!dev) { showResult('err', '先选一个声卡'); return; }
+    btn.disabled = true;
+    btn.innerHTML = '<span class="spinner"></span>播放中';
+    api('/api/test-tone', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ audiodev: dev })
+    }).then(function (r) {
+      showResult('ok', '已在这块声卡上放了 2 秒 440Hz 的提示音。<b>听到就说明选对了</b>。');
+    }).catch(function (e) {
+      showResult('err', '播放失败：' + escapeHtml(e.message) +
+        '<br>常见原因是这块声卡正被别的程序占着。');
+    }).finally(function () {
+      btn.disabled = false;
+      btn.textContent = '测试音';
+    });
+  });
+
+  $('saveBtn').addEventListener('click', function () {
+    var btn = this;
+    var payload = {
+      friendly_name: $('name').value,
+      iface: $('iface').value,
+      audiodev: $('audiodev').value
+    };
+    if (!payload.iface || !payload.audiodev) {
+      showResult('err', '网卡和声卡都得选一个');
+      return;
+    }
+    // 改网卡等于让手机重新发现设备，提前说清楚，别让人以为弄坏了
+    var ifaceChanged = state && payload.iface !== state.iface;
+    var nameChanged = state && payload.friendly_name !== state.friendly_name;
+
+    btn.disabled = true;
+    btn.innerHTML = '<span class="spinner"></span>应用中';
+    $('result').className = '';
+
+    api('/api/config', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload)
+    }).then(function (r) {
+      var extra = '';
+      if (r.ok && nameChanged) {
+        extra = '<br>手机上的设备名可能要重开音乐 App 才会变。';
+      }
+      if (r.ok && ifaceChanged) {
+        extra = '<br>换了网卡，手机上可能 1–2 分钟才重新出现这台设备。';
+      }
+      showResult(r.ok ? 'ok' : 'err', escapeHtml(r.message) + extra, r.log_tail);
+      return load();
+    }).catch(function (e) {
+      showResult('err', '保存失败：' + escapeHtml(e.message));
+    }).finally(function () {
+      btn.disabled = false;
+      btn.textContent = '保存并生效';
+    });
+  });
+
+  load();
+})();
+</script>
+</body>
+</html>

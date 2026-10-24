@@ -233,6 +233,20 @@ func listCards() []soundCard {
 		return nil
 	}
 	var cards []soundCard
+	// plug:dmix 是 ALSA 的软件混音层，不在 aplay -l 里，但它才是渲染器该用的设备：
+	// 手机调音量时的提示音要和音乐同时出声，只有 dmix 允许多个客户端同时打开。
+	// 放列表最前面，默认就是它。
+	if hasPCM("plug:dmix") {
+		cards = append(cards, soundCard{
+			Value: "plug:dmix",
+			Card:  "dmix",
+			Index: -1,
+			Dev:   -1,
+			Name:  "共享输出（推荐，支持提示音）",
+			Chip:  "ALSA dmix",
+			Busy:  false,
+		})
+	}
 	for _, line := range strings.Split(string(out), "\n") {
 		m := cardRe.FindStringSubmatch(strings.TrimSpace(line))
 		if m == nil {
@@ -254,6 +268,20 @@ func listCards() []soundCard {
 		})
 	}
 	return cards
+}
+
+// aplay -L 里有没有这个 PCM 名（dmix 这类插件不在 aplay -l 的硬件列表里）
+func hasPCM(name string) bool {
+	out, err := exec.Command("aplay", "-L").Output()
+	if err != nil {
+		return false
+	}
+	for _, line := range strings.Split(string(out), "\n") {
+		if strings.TrimSpace(line) == name {
+			return true
+		}
+	}
+	return false
 }
 
 // 声卡被占用时切换过去会静默失败（UPnP 报 PLAYING 但没声音），

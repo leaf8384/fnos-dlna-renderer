@@ -51,6 +51,13 @@ if [ ! -f "$CONF" ]; then
 	IFACE=$(ip -4 route show default 2>/dev/null |
 		awk '{ for (n = 1; n <= NF; n++) if ($n == "dev") { print $(n + 1); exit } }')
 	CARD=$(aplay -l 2>/dev/null | sed -n 's/^card [0-9]*: \([^ ]*\) \[.*/\1/p' | head -1)
+	# 优先 plug:dmix：调音量的提示音要和音乐同时出声，dmix 才允许第二个客户端。
+	# plughw 是独占的，第二个打开会 Device or resource busy。
+	if aplay -L 2>/dev/null | grep -qx 'plug:dmix'; then
+		AUDIODEV="plug:dmix"
+	else
+		AUDIODEV="plughw:CARD=${CARD:-PCH},DEV=0"
+	fi
 
 	cat >"$CONF" <<EOF
 # dlna-renderer 配置
@@ -68,11 +75,13 @@ FRIENDLY_NAME=Marshall
 # 多网卡或改了网络之后如果手机搜不到设备，先来这里确认。
 IFACE=${IFACE}
 
-# ALSA 输出设备。留空则自动取第一块声卡。
-# 查询可用设备：aplay -L | grep plughw
-AUDIODEV=plughw:CARD=${CARD:-PCH},DEV=0
+# ALSA 输出设备。留空则自动探测。
+# plug:dmix 是 ALSA 的软件混音：允许多个客户端同时出声，手机调音量的
+# 提示音才能和音乐混在一起。换成 plughw:... 会让提示音失效（音乐照常）。
+# 查询可用设备：aplay -L
+AUDIODEV=${AUDIODEV}
 EOF
-	log "已生成默认配置 $CONF（网卡=${IFACE:-自动} 声卡=${CARD:-自动}）"
+	log "已生成默认配置 $CONF（网卡=${IFACE:-自动} 声卡=${AUDIODEV}）"
 else
 	log "配置已存在，保留不动"
 fi

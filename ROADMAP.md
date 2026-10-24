@@ -1,6 +1,6 @@
 # 未来计划
 
-> 记录于 2026-10-22，更新于 2026-10-24。当前版本 **1.1.6**（1.0.0 稳定运行；1.0.1 修中文设备名；1.1.0 网页设置界面；1.1.1 播放控制 + 桌面入口；1.1.2 去重复页头 + 修窗口图标；1.1.3 补安装依赖；1.1.4 修入口配置；1.1.5 修播完不释放声卡；1.1.6 音量确认音），**暂无必须做的事**，以下按优先级排列，做到哪算哪。
+> 记录于 2026-10-22，更新于 2026-10-24。当前版本 **1.1.7**（1.0.0 稳定运行；1.0.1 修中文设备名；1.1.0 网页设置界面；1.1.1 播放控制 + 桌面入口；1.1.2 去重复页头 + 修窗口图标；1.1.3 补安装依赖；1.1.4 修入口配置；1.1.5 修播完不释放声卡；1.1.6 音量确认音；1.1.7 重做确认音，修 1.1.6 放不出声），**暂无必须做的事**，以下按优先级排列，做到哪算哪。
 > 应用化设计的完整方案见 [`docs/app-console-plan.md`](app-console-plan.md)。
 
 ## P0 · 待验证（决定后续路线，30 分钟）
@@ -98,37 +98,78 @@
 - [x] **应用中心库里补登记**：列表存在 **postgres `appcenter` 库**（`app_service` / `app_open` / `app_poster`），不是扫目录；手工铺文件不会自动写库。重启 `trim_app_center` 会把**所有应用**重启一遍（约 20 秒）
 
 
-## P2 · 音量确认音（v1.1.6，2026-10-24）
+## P2 · 音量确认音（v1.1.7，2026-10-24）
 
 投屏时**手机端看不到渲染器的实际音量**（网易云投屏页不回读远端音量），手机上按音量键之后
 「到底调到多少」完全没反馈。所以让渲染器在音量变化时「滴」一声，满档用更高的音。
 
-**为什么不能简单地 `system("aplay ...")`**：播放中 `plughw:CARD=PCH,DEV=0` 被 GStreamer 的
-alsasink 独占，外部 `aplay` 一律 `Device or resource busy`（1.1.5 那轮实测过）。而且
-`/proc/asound/pcm` 只有 **1 路 playback**（`00-00: ALC887-VD Analog : playback 1`），
-没有多余的 subdevice 可以另开一路。**唯一的出路是在同一个 sink 内部混音。**
+### 死路：在播放管线内部混音（v1.1.6，已作废）
 
-**实现要点**（`patches/0004-volume-beep.patch`）
+1.1.6 把 sink 换成 `audiomixer ! audioconvert ! alsasink` 的自定义 bin，把 `audiotestsrc`
+接到 mixer 第二路。**装上后歌直接放不出来**：`audiomixer` 要等**所有**输入 pad 都 preroll
+完成才输出，而 `is-live=TRUE` 的测试音源在 PAUSED 下不产数据，于是 mixer 永远 preroll 不完，
+`playbin` 卡死在预备阶段。日志特征：
 
-- sink 改成自定义 bin：`audiomixer ! audioconvert ! alsasink`，`audiotestsrc` 经
-  `audioconvert ! audioresample` 接到 mixer 的第二路，mixer 剩下的那路 ghost 成 bin 的 `sink`
-  pad 给 playbin 用。构造失败一律回退到裸 ausink（返回 NULL 走原路径），保证不会因为缺插件起不来。
-- **`audiotestsrc` 常驻 PLAYING、`volume=0`**，响的时候把 volume 抬到 0.5、70ms 后归零。
-  让它常驻是为了 mixer 的 pad 一直处于协商好的状态；临时 PAUSED 会牵扯 renegotiation。
-- ⚠️ **换成自定义 sink bin 后 `playbin` 的 `volume` / `mute` 属性失效**（GstStreamVolume 传不进 bin）。
-  必须把 set/get volume、set/get mute 全部改到 `alsasink` 上，否则**音量控制整体失灵**。
-  好处是歪打正着：混音在 alsasink 之前，增益作用在整个混合信号上，**滴声天然跟随主音量**。
-  用 `beep_alsasink_` 是否为空做分支，裸 sink 时仍走 playbin。
-- 触发点挂在 `upnp_control.c` 的 `change_volume()`（和 `volume_state_save()` 同一处）。
-  **防抖 400ms**：网易云一次按键发一个 SetVolume、拖动则是连发（抓包实测峰值 19 req/s），
-  不防抖就是机关枪。防抖窗口内只保留最后一次的值。
-- **只在播放中响**：`upnp_transport_is_playing()` 是新加的（直接读 `upnp_transport.c` 里的
-  `transport_state_`，比翻变量容器干净）。STOPPED 时调音量不响。
-- 音色：普通档 880Hz、满档（>=100）1320Hz，各 70ms。
+```
+Preroll still in flight (3/3); keep waiting
+Unexpected state 2 (pending 4, wanted 4)
+Restarting playbin (wrong-state) ...
+```
+
+真机复现（`playbin` + `audiomixer` + `audiotestsrc is-live=TRUE`）：
+`streaming stopped, reason not-linked (-1)` / `pipeline doesn't want to preroll`。
+去掉 `is-live` 能让 preroll 通过，但那路常驻源会让 mixer **永远不发 EOS** → 1.1.5 修的
+「播完释放声卡」和切歌链路全部失效。**这条路整体不可取，不要回头再试。**
+
+顺带一条教训：控制台的「测试音」是 `aplay` 独立进程，**它响不代表播放链路没坏**。
+
+### 现行方案：独立管线 + ALSA dmix（v1.1.7）
+
+主播放管线的 sink **一行都不动**（就是 1.1.5 那个已验证能出声的形态），只把设备从独占的
+`plughw:CARD=PCH,DEV=0` 换成 `plug:dmix`；提示音自己起一条**一次性短管线**，
+`audiotestsrc → audioconvert → audioresample → volume → alsasink(device=plug:dmix)`，
+靠 dmix 和音乐同时输出。好处：无共享状态、无需拆线、失败也牵连不到音乐。
+
+**真机验证过的证据**（用和播歌完全相同的 `playbin` + `alsasink`）：
+
+| 测试 | 结果 |
+|---|---|
+| `playbin` 走 `plug:dmix` 播 6 秒 | `pcm state: RUNNING`，`owner_pid` 有值 |
+| 播放中叠一路 880Hz 70ms | `exit=0`，同时混音 |
+| 播放中再叠一路 1320Hz 70ms | `exit=0` |
+| EOS 后 1 秒 | `pcm: closed` → 0003 的放设备修复仍有效 |
+| 两个 `aplay -D plug:dmix` 并发 | 两个都 `exit=0` |
+
+**实现要点**（`patches/0004-volume-beep.patch`，已按上述方案重写）
+
+- `output_beep(freq, duration_ms, level_pct)` 起一个 detached `GThread`，线程里建管线、
+  PLAYING、等 EOS/ERROR（超时 `duration+1500ms` 兜底防线程泄漏）、等 200ms 让 dmix 把尾巴
+  推完、再 `GST_STATE_NULL` 关掉句柄。**绝不能在主循环里同步做**——网易云 `GetPositionInfo`
+  峰值 19 req/s（约 51ms 一次），阻塞 70ms 会直接丢响应。
+- **音的时长取整数个周期**：`period = round(44100/freq)`，`samples` 向下取到 period 的整数倍。
+  频率选 44100 的整除数（普通 **882Hz**＝50 samples/周期，满档 **1764Hz**＝25 samples/周期），
+  这样波形正好收在过零点，不会因为截断出现爆音开关声。
+- 用 `audiotestsrc` 的 `caps` + `samplesperbuffer=N` + `num-buffers=1`：一次吐一整段然后 EOS，
+  不用做 fade 包络。
+- **跟随主音量**：`playbin` 的 volume 是线性增益，所以提示音也走线性
+  `volume = 0.5 * level_pct / 100`，相对音乐保持固定比例。
+- 触发点仍在 `upnp_control.c` 的 `change_volume()`，**防抖 400ms**：一次按键发一个 SetVolume、
+  拖动则连发，不防抖就是机关枪。
+- **只在播放中响**：`upnp_transport_is_playing()`（新加，直接读 `transport_state_`）。
+  另外 `output_get_mute()` 为真时也不响——静音了还滴一声很怪。
+
+**代价**：主路多走一层 ALSA 软件混音，44.1k 源被重采样到 48k（dmix 默认格式）。这台 aux 音箱
+听不出来，接受。
+
+**配置迁移**：`cmd/main` 的 `detect_audiodev()` 优先返回 `plug:dmix`；`load_conf()` 里
+`migrate_audiodev()` 把旧值（仅限旧版自动探测出来的那一坨 `plughw:CARD=<第一块卡>,DEV=0` /
+`plughw:0,0` / `hw:0,0`）一次性改写成 `plug:dmix`，**用户手工挑的其他设备不动**。
+设置页声卡列表第一项固定是「共享输出（推荐，支持提示音）」。
+
+> 为什么必须迁移而不是加个开关：音乐握着 `plughw` 时，dmix 根本打不开 `hw:0,0`，
+> 提示音必然失败，而且是**静默失败**——用户只会以为这个功能没做。所以主设备必须是 dmix。
 
 **已知取舍**：滴声跟随主音量 → 音量很低时它也几乎听不见（用户明确选了这个，简单优先）。
-真要在小音量下也清楚，得让提示音绕开 alsasink 增益，那就得在 mixer 之后单独引一路，
-复杂度和收益不成比例。
 
 ## 安装依赖（v1.1.3 修）
 

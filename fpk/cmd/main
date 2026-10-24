@@ -59,9 +59,16 @@ detect_iface() {
 }
 
 # 用声卡名字而不是序号：重启后 card 编号会变，名字不会
+# 优先 plug:dmix 而不是 plughw：调音量的提示音要和音乐同时出声，
+# dmix 才允许第二个客户端；plughw 是独占的，第二个打开直接被拒。
+# 没装 dmix 的机器退回 plughw，此时只是没有提示音，音乐照常。
 detect_audiodev() {
 	local name
 	name=$(aplay -l 2>/dev/null | sed -n 's/^card [0-9]*: \([^ ]*\) \[.*/\1/p' | head -1)
+	if aplay -L 2>/dev/null | grep -qx 'plug:dmix'; then
+		printf 'plug:dmix'
+		return
+	fi
 	printf 'plughw:CARD=%s,DEV=0' "${name:-PCH}"
 }
 
@@ -81,6 +88,31 @@ load_conf() {
 	[ -z "$IFACE" ] && IFACE="$(detect_iface)"
 	[ -z "$AUDIODEV" ] && AUDIODEV="$(detect_audiodev)"
 	[ -z "$FRIENDLY_NAME" ] && FRIENDLY_NAME="Marshall"
+	migrate_audiodev
+}
+
+# 1.1.7：老配置里存的是独占的 plughw，升级后自动换成 plug:dmix。
+# 不改的话音乐照常，但调音量的提示音永远混不进去（第二路打开声卡被拒），
+# 而且失败是静默的 —— 用户只会觉得"这个功能没做"。
+# 只迁移旧版自动探测出来的那一个值（第一块声卡 DEV=0），
+# 用户手工指定的其他设备一概不动。
+migrate_audiodev() {
+	local first
+	case "$AUDIODEV" in
+	*plughw:*|*hw:*) ;;
+	*) return 0 ;;
+	esac
+	aplay -L 2>/dev/null | grep -qx 'plug:dmix' || return 0
+	first=$(aplay -l 2>/dev/null | sed -n 's/^card [0-9]*: \([^ ]*\) \[.*/\1/p' | head -1)
+	case "$AUDIODEV" in
+	"plughw:CARD=${first:-PCH},DEV=0"|plughw:0,0|hw:0,0) ;;
+	*) return 0 ;;
+	esac
+	log "声卡设备从 $AUDIODEV 迁移到 plug:dmix（提示音需要共享输出）"
+	AUDIODEV="plug:dmix"
+	if [ -f "$CONF" ]; then
+		sed -i 's|^AUDIODEV=.*|AUDIODEV=plug:dmix|' "$CONF"
+	fi
 }
 
 # ---- pid 管理 ---------------------------------------------------------

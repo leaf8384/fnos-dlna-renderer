@@ -4,7 +4,7 @@
 No changes to the installed renderer, its volume file, or physical speakers.
 python3 tests/test_renderer_integration.py --renderer build/.../src/gmediarender
 """
-import argparse, os, re, subprocess, tempfile, time, urllib.request, wave
+import argparse, array, math, os, re, subprocess, tempfile, time, urllib.request, wave
 from pathlib import Path
 from xml.sax.saxutils import escape
 
@@ -34,11 +34,14 @@ with tempfile.TemporaryDirectory(prefix='dlna-integration-') as folder:
         with wave.open(str(d/(name+'.wav')),'wb') as w:
             w.setnchannels(2);w.setsampwidth(2);w.setframerate(44100);w.writeframes(b'\0'*44100*4*30)
     (d/'volume.state').write_text('50\n')
-    env=dict(os.environ,GMR_VOLUME_STATE=str(d/'volume.state'),LANG='C.UTF-8')
+    # Only the independent beep uses this PCM. Music goes to fakesink, so
+    # music cannot make the signal-energy assertions pass accidentally.
+    (d/'asound.conf').write_text('</usr/share/alsa/alsa.conf>\npcm.codex_beep {\n type file\n slave.pcm "null"\n file "'+str(d/'beep.raw')+'"\n format "raw"\n}\n')
+    env=dict(os.environ,GMR_VOLUME_STATE=str(d/'volume.state'),LANG='C.UTF-8',ALSA_CONFIG_PATH=str(d/'asound.conf'))
     def uri(name):
         soap('SetAVTransportURI',f'<CurrentURI>{escape((d/(name+".wav")).as_uri())}</CurrentURI><CurrentURIMetaData></CurrentURIMetaData>')
     with (d/'renderer.log').open('w') as output:
-        process=subprocess.Popen([binary,'-I',a.interface,'-p',str(a.port),'-u','codex-regression-1110','-f','DLNA regression (silent)','--gstout-audiopipe=fakesink sync=true','--gstout-audiodevice=null','--logfile=stdout'],stdout=output,stderr=subprocess.STDOUT,env=env)
+        process=subprocess.Popen([binary,'-I',a.interface,'-p',str(a.port),'-u','codex-regression-1110','-f','DLNA regression (silent)','--gstout-audiopipe=fakesink sync=true','--gstout-audiodevice=codex_beep','--logfile=stdout'],stdout=output,stderr=subprocess.STDOUT,env=env)
         try:
             for _ in range(50):
                 if process.poll() is not None: raise RuntimeError('test renderer exited')
@@ -51,6 +54,30 @@ with tempfile.TemporaryDirectory(prefix='dlna-integration-') as folder:
             time.sleep(1)
             log=(d/'renderer.log').read_text()
             assert log.index('Volume tone first:')<log.index('Volume ramp after tone:')<log.index('Volume applied:')
+            # The ALSA null slave can emit a large amount of zero padding.
+            # Analyze only 100ms around the actual signal, without spending
+            # longer than the test track's duration processing silence.
+            left=[]
+            with (d/'beep.raw').open('rb') as capture:
+                while block:=capture.read(8192):
+                    raw=array.array('h');raw.frombytes(block)
+                    channel=raw[::2]
+                    if any(channel):
+                        first=next(i for i,v in enumerate(channel) if v)
+                        signal=list(channel[first:])
+                        more=array.array('h');more.frombytes(capture.read(max(0,4410-len(signal))*4))
+                        left=[v/32768 for v in (signal+list(more[::2]))[:4410]]
+                        break
+            assert left,'beep pipeline emitted only silence'
+            peak=max(map(abs,left))
+            assert .035 < peak < .06,('beep gain below audible baseline',peak)
+            def energy(freq):
+                x=sum(v*math.cos(2*math.pi*freq*i/44100) for i,v in enumerate(left))
+                y=sum(v*math.sin(2*math.pi*freq*i/44100) for i,v in enumerate(left))
+                return x*x+y*y
+            off=energy(650)+energy(1700)
+            assert energy(882)>10*off and energy(1323)>10*off,'missing chime frequencies'
+            print(f'PASS real beep PCM: peak={peak:.4f}, both chime frequencies present',flush=True)
             print('PASS real pipeline: acknowledgement, ramp, final target; SOAP reports target immediately',flush=True)
             before=len(log);volume(60);time.sleep(.21);volume(40);time.sleep(1)
             tail=(d/'renderer.log').read_text()[before:]

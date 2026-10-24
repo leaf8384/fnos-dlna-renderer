@@ -112,14 +112,14 @@
 -	}
 -	job = g_new0(beep_job, 1);
 -	job->tone = (which != 0) ? &BEEP_FULL : &BEEP_NORMAL;
-+	/* Keep music gain untouched. A quiet chime follows the OLD audible
++	/* Keep music gain untouched. An audible chime follows the OLD audible
 +	 * gain; the requested gain is applied only after this pipeline drains. */
 +	job->tone = which ? &BEEP_FULL : &BEEP_NORMAL;
  	job->duration_ms = duration_ms;
 -	job->volume = gain;
 -
 -	/* Detached: a volume-key burst must never stall the UPnP thread. */
-+	job->volume = CLAMP(0.18 * (double)music_gain, 0.0, 0.18);
++	job->volume = CLAMP(0.6 * (double)music_gain, 0.0, 0.6);
 +	job->valid = valid;
 +	job->done = done;
 +	job->data = data;

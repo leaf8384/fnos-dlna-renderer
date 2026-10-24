@@ -35,7 +35,7 @@ jobs:
               apt-get update
               apt-get install -y --no-install-recommends \
                 build-essential autoconf automake libtool pkg-config \
-                libupnp-dev libgstreamer1.0-dev
+                libupnp-dev libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev
               bash scripts/build.sh
             '
           # 容器里以 root 写出来的文件，把属主交还给 runner

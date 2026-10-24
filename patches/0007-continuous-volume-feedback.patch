@@ -1,0 +1,227 @@
+--- a/src/upnp_control.c
++++ b/src/upnp_control.c
+@@ -438,35 +438,66 @@
+ /* A request publishes its target immediately, but the audible gain stays
+  * unchanged until the acknowledgement has drained. All sequence state is
+  * protected by control_mutex, including callbacks on the GLib main loop. */
+-#define VOLUME_SETTLE_MS 180
++#define VOLUME_SETTLE_MS 60
++#define VOLUME_BEEP_MS 120
++#define VOLUME_REPEAT_GAP_MS 80
+ #define VOLUME_RAMP_STEPS 12
+ #define VOLUME_RAMP_TICK_MS 15
+-static guint volume_timer_;
+-static guint volume_generation_;
++enum volume_phase { VOLUME_IDLE, VOLUME_WAIT, VOLUME_BEEP, VOLUME_RAMP };
++static enum volume_phase volume_phase_;
++static guint volume_timer_, volume_generation_, volume_revision_;
++static int volume_transport_generation_;
+ static double volume_target_gain_ = 1.0;
+ static int volume_target_level_ = -1;
+ static void set_mute_toggle(int do_mute);
+ 
+ typedef struct {
+-	guint generation;
++	guint generation, revision;
+ 	int transport_generation;
+ 	double from, to;
+ 	int step, level;
+ } volume_transition;
+ 
++static gboolean volume_tone_fire(gpointer data);
++static void volume_beep_done(void *data);
++
+ static void volume_cancel_locked(void) {
+ 	++volume_generation_;
++	volume_phase_ = VOLUME_IDLE;
+ 	if (volume_timer_ != 0) {
+ 		g_source_remove(volume_timer_);
+ 		volume_timer_ = 0;
+ 	}
+ }
+ 
++static void volume_snapshot_locked(volume_transition *t) {
++	t->revision = volume_revision_;
++	t->level = volume_target_level_;
++	t->to = volume_target_gain_;
++}
++
+ static void volume_finish_locked(volume_transition *t) {
+ 	output_set_volume(t->to);
+-	set_mute_toggle(t->level == 0);
+-	Log_info("control", "Volume applied: generation=%u level=%d gain=%.6f",
+-		 t->generation, t->level, t->to);
++	/* A stale intermediate zero must not mute a queued nonzero target. */
++	if (t->revision == volume_revision_) set_mute_toggle(t->level == 0);
++	Log_info("control", "Volume applied: generation=%u revision=%u level=%d gain=%.6f",
++		 t->generation, t->revision, t->level, t->to);
++}
++
++static void volume_finish_latest_locked(volume_transition *t) {
++	volume_snapshot_locked(t);
++	volume_finish_locked(t);
++	volume_phase_ = VOLUME_IDLE;
++	volume_timer_ = 0;
++}
++
++static void volume_schedule_tone_locked(int delay_ms) {
++	volume_transition *t = g_new0(volume_transition, 1);
++	t->generation = volume_generation_;
++	t->transport_generation = volume_transport_generation_;
++	volume_phase_ = VOLUME_WAIT;
++	volume_timer_ = g_timeout_add_full(G_PRIORITY_DEFAULT, delay_ms,
++		volume_tone_fire, t, g_free);
+ }
+ 
+ static gboolean volume_ramp_tick(gpointer data) {
+@@ -474,11 +505,19 @@
+ 	gboolean again = FALSE;
+ 	pthread_mutex_lock(&control_mutex);
+ 	if (t->generation == volume_generation_) {
+-		if (++t->step >= VOLUME_RAMP_STEPS ||
+-		    !upnp_transport_is_playing() ||
++		if (!upnp_transport_is_playing() ||
+ 		    t->transport_generation != upnp_transport_generation()) {
++			volume_finish_latest_locked(t);
++		} else if (++t->step >= VOLUME_RAMP_STEPS) {
+ 			volume_finish_locked(t);
+ 			volume_timer_ = 0;
++			if (t->revision != volume_revision_) {
++				/* New keys arrived during this bounded ramp: acknowledge
++				 * the newest target in a fresh, non-overlapping cycle. */
++				volume_schedule_tone_locked(VOLUME_REPEAT_GAP_MS);
++			} else {
++				volume_phase_ = VOLUME_IDLE;
++			}
+ 		} else {
+ 			const double fraction = (double)t->step / VOLUME_RAMP_STEPS;
+ 			output_set_volume(t->from + (t->to - t->from) * fraction);
+@@ -489,8 +528,8 @@
+ 	return again;
+ }
+ 
+-/* Called by the short-lived audio worker; never acquire the transport
+- * mutex here. Transport exports atomic snapshots to avoid lock inversion. */
++/* Workers only read the interaction generation. New volume requests update
++ * the revision, so a held key cannot repeatedly truncate an audible tone. */
+ static int volume_beep_valid(void *data) {
+ 	volume_transition *t = data;
+ 	int muted = 0, valid;
+@@ -503,20 +542,42 @@
+ 	return valid;
+ }
+ 
+-/* Success, failure and cancellation all arrive here on the main loop.
+- * The worker owns t until this callback; a ramp then gets its own copy. */
++static void volume_begin_tone_locked(volume_transition *t) {
++	volume_transition *job = g_new0(volume_transition, 1);
++	float current = volume_target_gain_;
++	*job = *t;
++	volume_snapshot_locked(job);
++	output_get_volume(&current);
++	job->from = current;
++	volume_phase_ = VOLUME_BEEP;
++	Log_info("control", "Volume tone first: generation=%u revision=%u target=%d old_gain=%.6f duration=%d",
++		 job->generation, job->revision, job->level, job->from, VOLUME_BEEP_MS);
++	output_beep(job->level >= 100, VOLUME_BEEP_MS, job->from,
++		volume_beep_valid, volume_beep_done, job);
++}
++
++/* Failure and cancellation also complete here. Only one tone or ramp owns
++ * the interaction; pending keys coalesce into the latest target. */
+ static void volume_beep_done(void *data) {
+ 	volume_transition *t = data;
+ 	pthread_mutex_lock(&control_mutex);
+ 	if (t->generation == volume_generation_) {
+ 		if (!upnp_transport_is_playing() ||
+ 		    t->transport_generation != upnp_transport_generation()) {
+-			volume_finish_locked(t);
++			volume_finish_latest_locked(t);
++		} else if (volume_target_level_ >= 100 && t->level < 100) {
++			/* Reached full scale while the normal tone was already
++			 * playing: complete the distinct full-scale tone first.
++			 * Its completion will re-read the target, even if lowered. */
++			volume_begin_tone_locked(t);
+ 		} else {
+ 			volume_transition *r = g_new0(volume_transition, 1);
+ 			*r = *t;
+-			Log_info("control", "Volume ramp after tone: generation=%u %.6f -> %.6f",
+-				 t->generation, t->from, t->to);
++			volume_snapshot_locked(r);
++			r->step = 0;
++			volume_phase_ = VOLUME_RAMP;
++			Log_info("control", "Volume ramp after tone: generation=%u revision=%u %.6f -> %.6f",
++				 r->generation, r->revision, r->from, r->to);
+ 			volume_timer_ = g_timeout_add_full(G_PRIORITY_DEFAULT,
+ 				VOLUME_RAMP_TICK_MS, volume_ramp_tick, r, g_free);
+ 		}
+@@ -525,7 +586,7 @@
+ 	g_free(t);
+ }
+ 
+-static gboolean volume_settle_fire(gpointer data) {
++static gboolean volume_tone_fire(gpointer data) {
+ 	volume_transition *t = data;
+ 	int muted = 0;
+ 	pthread_mutex_lock(&control_mutex);
+@@ -534,46 +595,37 @@
+ 		output_get_mute(&muted);
+ 		if (muted || !upnp_transport_is_playing() ||
+ 		    t->transport_generation != upnp_transport_generation()) {
+-			volume_finish_locked(t);
++			volume_finish_latest_locked(t);
+ 		} else {
+-			volume_transition *job = g_new0(volume_transition, 1);
+-			*job = *t;
+-			Log_info("control", "Volume tone first: generation=%u target=%d old_gain=%.6f",
+-				 t->generation, t->level, t->from);
+-			output_beep(t->level >= 100, 70, t->from,
+-				volume_beep_valid, volume_beep_done, job);
++			volume_begin_tone_locked(t);
+ 		}
+ 	}
+ 	pthread_mutex_unlock(&control_mutex);
+ 	return G_SOURCE_REMOVE;
+ }
+ 
+-/* Invoked under service_lock by SOAP handlers. Repeated identical targets
+- * do not postpone the acknowledgement indefinitely. */
++/* Invoked under service_lock. Preserve an in-progress acknowledgement and
++ * make bounded progress while keys repeat, instead of waiting for release. */
+ static void volume_request_locked(int level, double gain) {
+-	float current = gain;
+ 	int muted = 0;
+-	volume_transition *t;
++	volume_transition now = {0};
+ 	output_get_mute(&muted);
+ 	if (level == volume_target_level_ && gain == volume_target_gain_ &&
+ 	    (level == 0 || !muted)) return;
+-	volume_cancel_locked();
+ 	volume_target_level_ = level;
+ 	volume_target_gain_ = gain;
+-	output_get_volume(&current);
+-	t = g_new0(volume_transition, 1);
+-	t->generation = volume_generation_;
+-	t->transport_generation = upnp_transport_generation();
+-	t->from = current;
+-	t->to = gain;
+-	t->level = level;
++	++volume_revision_;
+ 	if (muted || !upnp_transport_is_playing()) {
+-		volume_finish_locked(t);
+-		g_free(t);
++		volume_cancel_locked();
++		now.generation = volume_generation_;
++		volume_finish_latest_locked(&now);
+ 		return;
+ 	}
+-	volume_timer_ = g_timeout_add_full(G_PRIORITY_DEFAULT, VOLUME_SETTLE_MS,
+-		volume_settle_fire, t, g_free);
++	if (volume_phase_ != VOLUME_IDLE &&
++	    volume_transport_generation_ == upnp_transport_generation()) return;
++	volume_cancel_locked();
++	volume_transport_generation_ = upnp_transport_generation();
++	volume_schedule_tone_locked(VOLUME_SETTLE_MS);
+ }
+ 
+ static void change_volume(const char *volume, const char *db_volume) {

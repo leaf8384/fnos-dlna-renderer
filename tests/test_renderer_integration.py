@@ -55,7 +55,7 @@ with tempfile.TemporaryDirectory(prefix='dlna-integration-') as folder:
             log=(d/'renderer.log').read_text()
             assert log.index('Volume tone first:')<log.index('Volume ramp after tone:')<log.index('Volume applied:')
             # The ALSA null slave can emit a large amount of zero padding.
-            # Analyze only 100ms around the actual signal, without spending
+            # Analyze only 200ms around the actual signal, without spending
             # longer than the test track's duration processing silence.
             left=[]
             with (d/'beep.raw').open('rb') as capture:
@@ -65,10 +65,13 @@ with tempfile.TemporaryDirectory(prefix='dlna-integration-') as folder:
                     if any(channel):
                         first=next(i for i,v in enumerate(channel) if v)
                         signal=list(channel[first:])
-                        more=array.array('h');more.frombytes(capture.read(max(0,4410-len(signal))*4))
-                        left=[v/32768 for v in (signal+list(more[::2]))[:4410]]
+                        more=array.array('h');more.frombytes(capture.read(max(0,8820-len(signal))*4))
+                        left=[v/32768 for v in (signal+list(more[::2]))[:8820]]
                         break
             assert left,'beep pipeline emitted only silence'
+            signal_end=max(i for i,v in enumerate(left) if v)
+            signal_seconds=signal_end/44100
+            assert .11 < signal_seconds < .13,('incorrect chime duration',signal_seconds)
             peak=max(map(abs,left))
             assert .035 < peak < .06,('beep gain below audible baseline',peak)
             def energy(freq):
@@ -77,13 +80,14 @@ with tempfile.TemporaryDirectory(prefix='dlna-integration-') as folder:
                 return x*x+y*y
             off=energy(650)+energy(1700)
             assert energy(882)>10*off and energy(1323)>10*off,'missing chime frequencies'
-            print(f'PASS real beep PCM: peak={peak:.4f}, both chime frequencies present',flush=True)
+            print(f'PASS real beep PCM: peak={peak:.4f}, duration={signal_seconds:.3f}s, both chime frequencies present',flush=True)
             print('PASS real pipeline: acknowledgement, ramp, final target; SOAP reports target immediately',flush=True)
             before=len(log);volume(60);time.sleep(.21);volume(40);time.sleep(1)
             tail=(d/'renderer.log').read_text()[before:]
             assert re.search(r'Volume applied:.*level=40',tail)
-            assert not re.search(r'Volume applied:.*level=60',tail)
-            print('PASS real pipeline: newer target cancels superseded work',flush=True)
+            applied=re.findall(r'Volume applied:.*level=(\d+)',tail)
+            assert applied and applied[-1]=='40'
+            print('PASS real pipeline: overlapping requests converge to the latest target',flush=True)
             volume(70);time.sleep(.21);mute(1);time.sleep(.5)
             assert '<CurrentMute>1</CurrentMute>' in soap('GetMute','<Channel>Master</Channel>',True)
             volume(70)

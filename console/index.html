@@ -250,7 +250,7 @@
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
           <path d="M11 5 6 9H3v6h3l5 4V5z"/><path d="M15.5 8.5a5 5 0 0 1 0 7"/>
         </svg>
-        <input type="range" id="vol" min="0" max="100" value="60" disabled>
+        <input type="range" id="vol" min="0" max="100" value="0" style="visibility:hidden" disabled>
         <span class="pct" id="volpct">--</span>
       </div>
     </div>
@@ -293,6 +293,38 @@
   var devices = null;        // /api/devices
   var nowTimer = null;
   var lastVolSet = 0;
+  var pollBusy = false, pollEpoch = 0, pendingControls = 0;
+  var controlQueue = Promise.resolve();
+  var lastNow = null, volumeEditing = false, pendingVolume = null;
+  var volumeWaitUntil = 0;
+  var writeHeaders = { 'Content-Type': 'application/json', 'X-DLNA-Request': '1' };
+
+  function requestJSON(path, options) {
+    return fetch(path, options).then(function (r) {
+      if (!r.ok) throw new Error('请求失败（' + r.status + '）');
+      return r.json();
+    });
+  }
+
+  // A failed SOAP subquery is unknown, never an authoritative zero/empty.
+  function mergeNow(n) {
+    if (n.error || (n.running && !n.state)) return null;
+    var old = lastNow || {}, merged = Object.assign({}, old, n);
+    if (!n.has_volume) {
+      merged.volume = old.volume;
+      merged.has_volume = !!old.has_volume;
+    }
+    if (!n.has_media_info) {
+      ['uri', 'has_media', 'title', 'artist', 'album'].forEach(function (k) { merged[k] = old[k]; });
+    }
+    if (!n.has_position) {
+      merged.position = n.has_media_info && n.uri !== old.uri ? 0 : old.position;
+      merged.duration = n.has_media_info && n.uri !== old.uri ? 0 : old.duration;
+    }
+    if (!n.running) { merged.has_media = false; merged.has_volume = false; }
+    lastNow = merged;
+    return merged;
+  }
 
   function fmt(sec) {
     sec = Math.max(0, Math.floor(sec || 0));
@@ -326,7 +358,7 @@
   }
 
   function loadState() {
-    return fetch('/api/state').then(function (r) { return r.json(); }).then(function (s) {
+    return requestJSON('/api/state').then(function (s) {
       state = s;
       var on = !!s.running;
       $('badge').className = 'badge ' + (on ? 'on' : 'off');
@@ -341,7 +373,7 @@
   }
 
   function loadDevices() {
-    return fetch('/api/devices').then(function (r) { return r.json(); }).then(function (d) {
+    return requestJSON('/api/devices').then(function (d) {
       devices = d;
       fillSelect($('iface'),
         (d.ifaces || []).map(function (i) {
@@ -371,18 +403,34 @@
     $('btnToggle').disabled = true;
     $('btnStop').disabled = true;
     $('bar').className = 'bar disabled';
+    $('icoPlay').style.display = '';
+    $('icoPause').style.display = 'none';
   }
 
   function renderNow(n) {
+    if (n.has_volume && typeof n.volume === 'number') {
+      $('vol').disabled = false;
+      $('vol').style.visibility = '';
+      if (pendingVolume !== null && (n.volume === pendingVolume || Date.now() > volumeWaitUntil)) {
+        pendingVolume = null;
+      }
+      if (!volumeEditing && pendingVolume === null && Date.now() - lastVolSet > 300) {
+        $('vol').value = n.volume;
+        $('volpct').textContent = n.volume + '%';
+      }
+    }
+    if (n.state === 'TRANSITIONING') return;
     var playing = n.state === 'PLAYING';
     var paused = n.state === 'PAUSED_PLAYBACK' || n.state === 'PAUSED';
 
     if (!n.running) {
       setNowIdle('渲染器已停止');
+      $('vol').disabled = true;
       return;
     }
     // 渲染器会停在「PLAYING 但没有曲目」的僵尸态（EOS 后客户端又补了一个 Play），
     // 这时不能继续显示上一首，否则进度归零但曲名还在，很误导。
+    if (typeof n.has_media !== 'boolean') return;
     if (!n.has_media) {
       setNowIdle('未在播放');
       $('btnToggle').disabled = false;
@@ -417,18 +465,19 @@
     $('icoPlay').style.display = playing ? 'none' : '';
     $('icoPause').style.display = playing ? '' : 'none';
 
-    if (typeof n.volume === 'number') {
-      $('vol').disabled = false;
-      if (Date.now() - lastVolSet > 1200) {
-        $('vol').value = n.volume;
-        $('volpct').textContent = n.volume + '%';
-      }
-    }
   }
 
   function pollNow() {
-    if (document.hidden) return;
-    fetch('/api/now').then(function (r) { return r.json(); }).then(renderNow).catch(function () {});
+    if (document.hidden || pollBusy || pendingControls) return;
+    pollBusy = true;
+    var epoch = pollEpoch;
+    requestJSON('/api/now').then(function (n) {
+      if (epoch !== pollEpoch) return;
+      var merged = mergeNow(n);
+      if (merged) renderNow(merged);
+    }).catch(function () {
+      // Keep the last confirmed state during transient network failures.
+    }).then(function () { pollBusy = false; });
   }
 
   function startPoll() {
@@ -440,20 +489,31 @@
   // ---------------- 控制 ----------------
 
   function control(payload) {
-    return fetch('/api/control', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(payload)
-    }).then(function (r) { return r.json().then(function (j) { return { ok: r.ok, body: j }; }); })
-      .then(function (res) {
-        if (!res.ok || !res.body.ok) {
-          setMsg((res.body && res.body.message) || '操作失败', 'err');
-        } else {
-          setMsg('');
-        }
-        setTimeout(pollNow, 250);
-        return res;
+    ++pollEpoch; // invalidate any snapshot started before the user's action
+    ++pendingControls;
+    var run = controlQueue.then(function () {
+      return fetch('/api/control', {
+        method: 'POST', headers: writeHeaders, body: JSON.stringify(payload)
+      }).then(function (r) {
+        return r.json().then(function (j) {
+          if (!r.ok || !j.ok) throw new Error(j.message || '操作失败');
+          return j;
+        });
       });
+    });
+    controlQueue = run.catch(function () {});
+    return run.then(function (j) {
+      setMsg('');
+      return j;
+    }).catch(function (e) {
+      setMsg(e.message || '操作失败', 'err');
+      if (payload.action === 'volume' && pendingVolume === payload.value) pendingVolume = null;
+    }).then(function (j) {
+      --pendingControls;
+      ++pollEpoch;
+      setTimeout(pollNow, 250);
+      return j;
+    });
   }
 
   $('btnToggle').onclick = function () {
@@ -462,12 +522,19 @@
   };
   $('btnStop').onclick = function () { control({ action: 'stop' }); };
 
+  $('vol').onpointerdown = function () { volumeEditing = true; };
+  $('vol').onpointerup = $('vol').onpointercancel = $('vol').onblur = function () { volumeEditing = false; };
   $('vol').oninput = function () {
+    lastVolSet = Date.now();
+    volumeEditing = true;
     $('volpct').textContent = this.value + '%';
   };
   $('vol').onchange = function () {
     lastVolSet = Date.now();
-    control({ action: 'volume', value: parseInt(this.value, 10) });
+    volumeEditing = false;
+    pendingVolume = parseInt(this.value, 10);
+    volumeWaitUntil = Date.now() + 8000;
+    control({ action: 'volume', value: pendingVolume });
   };
 
   $('bar').onclick = function (ev) {
@@ -485,7 +552,7 @@
     setMsg('正在播放测试音…');
     fetch('/api/test-tone', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: writeHeaders,
       body: JSON.stringify({ audiodev: $('audio').value })
     }).then(function (r) { return r.json(); }).then(function (j) {
       setMsg(j.message || (j.ok ? '已播放' : '失败'), j.ok ? 'ok' : 'err');
@@ -503,9 +570,11 @@
     var ifaceChanged = state && payload.iface !== state.iface;
     this.disabled = true;
     setMsg('保存中…');
+    ++pollEpoch;
+    ++pendingControls;
     fetch('/api/config', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: writeHeaders,
       body: JSON.stringify(payload)
     }).then(function (r) { return r.json(); }).then(function (j) {
       var extra = '';
@@ -514,7 +583,11 @@
       return loadState().then(loadDevices).then(startPoll);
     }).catch(function (e) {
       setMsg('请求失败：' + e.message, 'err');
-    }).then(function () { $('btnSave').disabled = false; });
+    }).then(function () {
+      --pendingControls; ++pollEpoch;
+      $('btnSave').disabled = false;
+      pollNow();
+    });
   };
 
   document.addEventListener('visibilitychange', function () {

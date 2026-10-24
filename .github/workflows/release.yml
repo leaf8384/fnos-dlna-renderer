@@ -35,8 +35,9 @@ jobs:
               apt-get update
               apt-get install -y --no-install-recommends \
                 build-essential autoconf automake libtool pkg-config \
-                libupnp-dev libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev
+                libupnp-dev libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev python3
               bash scripts/build.sh
+              python3 tests/test_volume_sequence.py build/gmrender-resurrect-master
             '
           # 容器里以 root 写出来的文件，把属主交还给 runner
           sudo chown -R "$(id -u):$(id -g)" build
@@ -48,6 +49,12 @@ jobs:
 
       - name: 编译设置界面（Go 静态二进制）
         run: bash scripts/build-console.sh
+
+      - name: 回归测试
+        run: |
+          (cd console && go test -race ./... && go vet ./...)
+          python3 tests/test_release.py
+          node tests/test_ui.cjs
 
       - name: 打包 fpk
         run: bash scripts/package-fpk.sh

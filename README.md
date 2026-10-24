@@ -118,7 +118,7 @@ aplay -L | grep plughw
 ```bash
 # Debian / Ubuntu
 sudo apt install -y build-essential autoconf automake libtool pkg-config \
-                    libupnp-dev libgstreamer1.0-dev golang-go
+                    libupnp-dev libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev golang-go
 
 bash scripts/build.sh              # 渲染器：解压 → 打补丁 → autogen → configure → make
 bash scripts/build-console.sh      # 设置界面：Go 静态编译，产物不依赖目标机 libc
@@ -128,7 +128,7 @@ bash scripts/package-fpk.sh        # 组装成 fpk
 设置界面是纯标准库的 Go 程序，**`CGO_ENABLED=0` 静态链接**，所以在任何机器上交叉编译出来的都能直接跑在 fnOS 上
 （`GOOS=linux GOARCH=amd64`），不需要 Docker，也不用管目标机 glibc 版本。Debian 12 自带的 Go 1.19 就够。
 
-`build.sh` 打完补丁后会打印 `patch` 的输出，两个补丁都应该是 `succeeded`。
+`build.sh` 打完补丁后会打印 `patch` 的输出，所有补丁都应该应用成功。
 
 > 构建机的 glibc 不能比目标机新，否则运行时报 `GLIBC_2.xx not found`。在 Debian 12 上构建的包可以跑在 Debian 12/13；在 Debian 13 上构建的**不能**跑在 Debian 12。
 

@@ -1,0 +1,512 @@
+--- a/src/output.h
++++ b/src/output.h
+@@ -65,6 +65,9 @@
+  * is playing at right now (the same number given to output_set_volume);
+  * the tone is rendered at a fixed fraction of it so it follows the volume.
+  * Does not block. */
+-void output_beep(int which, int duration_ms, float music_gain);
++/* valid is checked by the worker; done always runs on the GLib main loop,
++ * even on cancellation or an unavailable audio device. done owns data. */
++void output_beep(int which, int duration_ms, float music_gain,
++                 int (*valid)(void *), void (*done)(void *), void *data);
+ 
+ #endif /* _OUTPUT_H */
+--- a/src/output_gstreamer.c
++++ b/src/output_gstreamer.c
+@@ -993,6 +993,9 @@
+ 	const beep_tone *tone;
+ 	int    duration_ms;
+ 	double volume;	/* linear gain applied to the tone itself */
++	int (*valid)(void *);
++	void (*done)(void *);
++	void *data;
+ } beep_job;
+ 
+ static GstElement *beep_make(const char *factory) {
+@@ -1061,6 +1064,12 @@
+ 	return buf;
+ }
+ 
++static gboolean beep_complete(gpointer data) {
++	beep_job *job = data;
++	job->done(job->data);
++	return G_SOURCE_REMOVE;
++}
++
+ static gpointer beep_thread(gpointer data) {
+ 	beep_job *job = (beep_job *) data;
+ 	GstElement *pipeline = NULL, *src = NULL, *conv = NULL,
+@@ -1072,6 +1081,7 @@
+ 	gboolean in_bin = FALSE;
+ 	gboolean got_eos = FALSE;
+ 
++	if (!job->valid(job->data)) goto done;
+ 	buf = beep_build_buffer(job->tone, job->duration_ms);
+ 	if (buf == NULL) {
+ 		goto done;
+@@ -1114,6 +1124,7 @@
+ 	}
+ 
+ 	bus = gst_element_get_bus(pipeline);
++	if (!job->valid(job->data)) goto done;
+ 	gst_element_set_state(pipeline, GST_STATE_PLAYING);
+ 	/* Hand the single buffer over, then end the stream so EOS flows and we
+ 	 * can tear the pipeline down cleanly. */
+@@ -1123,9 +1134,15 @@
+ 
+ 	/* EOS normally arrives right after the buffer drains; the timeout only
+ 	 * exists so that a wedged sink cannot leak this thread forever. */
+-	msg = gst_bus_timed_pop_filtered(bus,
+-			(GstClockTime) (job->duration_ms + 1500) * GST_MSECOND,
+-			GST_MESSAGE_EOS | GST_MESSAGE_ERROR);
++	{
++		const gint64 deadline = g_get_monotonic_time() +
++			(job->duration_ms + 1500) * 1000;
++		while (job->valid(job->data) && g_get_monotonic_time() < deadline) {
++			msg = gst_bus_timed_pop_filtered(bus, 10 * GST_MSECOND,
++				GST_MESSAGE_EOS | GST_MESSAGE_ERROR);
++			if (msg != NULL) break;
++		}
++	}
+ 	if (msg != NULL) {
+ 		if (GST_MESSAGE_TYPE(msg) == GST_MESSAGE_EOS) {
+ 			got_eos = TRUE;
+@@ -1154,7 +1171,8 @@
+ 		if (got_eos) {
+ 			/* Let dmix push the tail out before the handle goes
+ 			 * away; closing early chops the tone mid-wave. */
+-			g_usleep(150 * 1000);
++			int i;
++			for (i = 0; i < 15 && job->valid(job->data); ++i) g_usleep(10000);
+ 		}
+ 		gst_element_set_state(pipeline, GST_STATE_NULL);
+ 	} else {
+@@ -1163,33 +1181,22 @@
+ 	if (pipeline != NULL) {
+ 		gst_object_unref(pipeline);
+ 	}
+-	g_free(job);
++	g_idle_add_full(G_PRIORITY_DEFAULT, beep_complete, job, g_free);
+ 	return NULL;
+ }
+ 
+-void output_beep(int which, int duration_ms, float music_gain) {
+-	beep_job *job;
++void output_beep(int which, int duration_ms, float music_gain,
++                 int (*valid)(void *), void (*done)(void *), void *data) {
++	beep_job *job = g_new0(beep_job, 1);
+ 	GThread *thread;
+-	double gain;
+-
+-	if (music_gain <= 0.0f) {
+-		return;		/* silent by definition; stay quiet */
+-	}
+-	/* The tone rides at a fixed ratio below the music. Because the music is
+-	 * ducked first (see upnp_control.c), this needs to be loud enough to be
+-	 * unmistakable but not so loud that it clips when summed with the ducked
+-	 * music: 0.7 * music at full scale sums with 0.4 * music to 1.1, which
+-	 * is just over full scale — so cap it at 0.6 so the sum stays ≤ 1.0. */
+-	gain = 0.6 * (double) music_gain;
+-	if (gain > 0.6) {
+-		gain = 0.6;
+-	}
+-	job = g_new0(beep_job, 1);
+-	job->tone = (which != 0) ? &BEEP_FULL : &BEEP_NORMAL;
++	/* Keep music gain untouched. A quiet chime follows the OLD audible
++	 * gain; the requested gain is applied only after this pipeline drains. */
++	job->tone = which ? &BEEP_FULL : &BEEP_NORMAL;
+ 	job->duration_ms = duration_ms;
+-	job->volume = gain;
+-
+-	/* Detached: a volume-key burst must never stall the UPnP thread. */
++	job->volume = CLAMP(0.18 * (double)music_gain, 0.0, 0.18);
++	job->valid = valid;
++	job->done = done;
++	job->data = data;
+ 	thread = g_thread_new("gmr-beep", beep_thread, job);
+ 	g_thread_unref(thread);
+ }
+--- a/src/upnp_control.c
++++ b/src/upnp_control.c
+@@ -435,175 +435,151 @@
+ }
+ 
+ static void volume_state_save(int level);
+-/* defined further down; the confirmation tone needs the same dB curve the
+- * music is played at */
+-static float volume_level_to_decibel(int volume);
+-
+-/* A volume-key press sends one SetVolume, a slider drag sends a burst of
+- * them. Waiting for the value to settle turns that into one beep instead
+- * of a machine gun. */
+-#define VOLUME_BEEP_IDLE_MS 400
+-
+-/* ---- ducking: pull the music down before the tone, ramp it back after.
+- *
+- * Why a ramp instead of a hard step: a step makes the music audibly "cut"
+- * and then snap back, which is exactly the pumping artefact listeners
+- * describe as cheap. A short attack (~30 ms) and a gentler release
+- * (~350 ms) make the dip feel like a breath instead of a glitch.
+- *
+- * Depth is deliberately shallow: the tone itself is what should stand out,
+- * not the hole in the music. -8 dB (×0.4) is enough to clear the tone
+- * without making the music disappear. */
+-#define VOLUME_DUCK_GAIN   0.40		/* ×0.4 ≈ -8 dB while ducked */
+-#define VOLUME_DUCK_ATTACK_MS 30	/* time to ramp down */
+-#define VOLUME_DUCK_HOLD_MS    70	/* time at full duck (covers the tone) */
+-#define VOLUME_DUCK_RELEASE_MS 350	/* time to ramp back up */
+-#define VOLUME_DUCK_STEP_MS    10	/* ramp tick */
+-
+-static guint volume_beep_timer_ = 0;
+-static guint volume_duck_timer_ = 0;
+-static int volume_beep_level_ = -1;
+-static double volume_beep_gain_ = 1.0;
+-
+-/* The very same linear gain the music is played at: level 100 -> 1.0,
+- * level 50 -> 0.1 (that is -20dB, the scale playbin uses), level 0 ->
+- * 0.001. Rendering the tone at a fixed ratio of it keeps the tone the
+- * same distance below the music at every volume, instead of blasting
+- * through at a constant level. */
+-static double volume_level_gain(int level) {
+-	return exp(volume_level_to_decibel(level) / 20 * log(10));
+-}
+-
+-/* One tick of the ducking ramp. `data` is a pointer to a small struct that
+- * describes where we are going; the callback advances the music gain one
+- * step toward the target and reschedules itself until it arrives. */
++/* A request publishes its target immediately, but the audible gain stays
++ * unchanged until the acknowledgement has drained. All sequence state is
++ * protected by control_mutex, including callbacks on the GLib main loop. */
++#define VOLUME_SETTLE_MS 180
++#define VOLUME_RAMP_STEPS 12
++#define VOLUME_RAMP_TICK_MS 15
++static guint volume_timer_;
++static guint volume_generation_;
++static double volume_target_gain_ = 1.0;
++static int volume_target_level_ = -1;
++static void set_mute_toggle(int do_mute);
++
+ typedef struct {
+-	double from;
+-	double to;
+-	int    step;		/* current step index */
+-	int    steps;		/* total steps */
+-} duck_ramp;
+-
+-static gboolean duck_ramp_tick(gpointer data) {
+-	duck_ramp *r = (duck_ramp *) data;
+-	double t, g;
+-	r->step++;
+-	if (r->step >= r->steps) {
+-		t = 1.0;
+-	} else {
+-		t = (double) r->step / (double) r->steps;
+-	}
+-	g = r->from + (r->to - r->from) * t;
+-
++	guint generation;
++	int transport_generation;
++	double from, to;
++	int step, level;
++} volume_transition;
++
++static void volume_cancel_locked(void) {
++	++volume_generation_;
++	if (volume_timer_ != 0) {
++		g_source_remove(volume_timer_);
++		volume_timer_ = 0;
++	}
++}
++
++static void volume_finish_locked(volume_transition *t) {
++	output_set_volume(t->to);
++	set_mute_toggle(t->level == 0);
++	Log_info("control", "Volume applied: generation=%u level=%d gain=%.6f",
++		 t->generation, t->level, t->to);
++}
++
++static gboolean volume_ramp_tick(gpointer data) {
++	volume_transition *t = data;
++	gboolean again = FALSE;
+ 	pthread_mutex_lock(&control_mutex);
+-	output_set_volume(g);
++	if (t->generation == volume_generation_) {
++		if (++t->step >= VOLUME_RAMP_STEPS ||
++		    !upnp_transport_is_playing() ||
++		    t->transport_generation != upnp_transport_generation()) {
++			volume_finish_locked(t);
++			volume_timer_ = 0;
++		} else {
++			const double fraction = (double)t->step / VOLUME_RAMP_STEPS;
++			output_set_volume(t->from + (t->to - t->from) * fraction);
++			again = TRUE;
++		}
++	}
+ 	pthread_mutex_unlock(&control_mutex);
+-
+-	if (r->step >= r->steps) {
+-		g_free(r);
+-		return G_SOURCE_REMOVE;
+-	}
+-	return G_SOURCE_CONTINUE;
+-}
+-
+-static void duck_ramp_start(double from, double to, int ms) {
+-	duck_ramp *r = g_new0(duck_ramp, 1);
+-	int steps = ms / VOLUME_DUCK_STEP_MS;
+-	if (steps < 1) {
+-		steps = 1;
+-	}
+-	r->from = from;
+-	r->to = to;
+-	r->step = 0;
+-	r->steps = steps;
+-	volume_duck_timer_ = g_timeout_add(VOLUME_DUCK_STEP_MS,
+-					   duck_ramp_tick, r);
+-}
+-
+-/* After the attack ramp finishes, the music is at full duck: now is the
+- * moment the tone sounds, so it is not fighting the music. */
+-typedef struct {
+-	int   level;
+-	double gain;
+-} duck_then_beep;
+-
+-static gboolean duck_then_beep_fire(gpointer data) {
+-	duck_then_beep *p = (duck_then_beep *) data;
+-	/* Full scale gets a distinctly higher (octave-up) tone. */
+-	output_beep(p->level >= 100 ? 1 : 0, 70, p->gain);
+-	g_free(p);
+-	return G_SOURCE_REMOVE;
+-}
+-
+-/* The tone has sounded; wait out the hold, then ramp the music back. */
+-static gboolean duck_release_fire(gpointer data) {
+-	(void)data;
+-	volume_duck_timer_ = 0;
+-	duck_ramp_start(volume_beep_gain_ * VOLUME_DUCK_GAIN,
+-			volume_beep_gain_, VOLUME_DUCK_RELEASE_MS);
+-	return G_SOURCE_REMOVE;
+-}
+-
+-static gboolean volume_beep_fire(gpointer data) {
+-	int muted = 0;
+-	(void)data;
+-	volume_beep_timer_ = 0;
+-	/* Nothing is coming out of the speaker, so silence is the honest
+-	 * feedback: no tone while stopped, paused or muted. */
+-	if (!upnp_transport_is_playing()) {
+-		return G_SOURCE_REMOVE;
+-	}
+-	/* Not service_lock(): that one also brackets a UPnP LastChange
+-	 * collection, and we are not changing any variable here. */
++	return again;
++}
++
++/* Called by the short-lived audio worker; never acquire the transport
++ * mutex here. Transport exports atomic snapshots to avoid lock inversion. */
++static int volume_beep_valid(void *data) {
++	volume_transition *t = data;
++	int muted = 0, valid;
+ 	pthread_mutex_lock(&control_mutex);
+ 	output_get_mute(&muted);
++	valid = t->generation == volume_generation_ && !muted &&
++		upnp_transport_is_playing() &&
++		t->transport_generation == upnp_transport_generation();
+ 	pthread_mutex_unlock(&control_mutex);
+-	if (muted) {
+-		return G_SOURCE_REMOVE;
+-	}
+-
+-	{
+-		duck_then_beep *p = g_new0(duck_then_beep, 1);
+-		p->level = volume_beep_level_;
+-		p->gain = volume_beep_gain_;
+-
+-		/* 1) ramp the music down... */
+-		duck_ramp_start(volume_beep_gain_,
+-				volume_beep_gain_ * VOLUME_DUCK_GAIN,
+-				VOLUME_DUCK_ATTACK_MS);
+-		/* 2) ...sound the tone once the dip has landed... */
+-		g_timeout_add(VOLUME_DUCK_ATTACK_MS + VOLUME_DUCK_STEP_MS,
+-			      duck_then_beep_fire, p);
+-		/* 3) ...hold, then ramp back up. */
+-		g_timeout_add(VOLUME_DUCK_ATTACK_MS + VOLUME_DUCK_HOLD_MS
+-			      + VOLUME_DUCK_STEP_MS,
+-			      duck_release_fire, NULL);
+-	}
++	return valid;
++}
++
++/* Success, failure and cancellation all arrive here on the main loop.
++ * The worker owns t until this callback; a ramp then gets its own copy. */
++static void volume_beep_done(void *data) {
++	volume_transition *t = data;
++	pthread_mutex_lock(&control_mutex);
++	if (t->generation == volume_generation_) {
++		if (!upnp_transport_is_playing() ||
++		    t->transport_generation != upnp_transport_generation()) {
++			volume_finish_locked(t);
++		} else {
++			volume_transition *r = g_new0(volume_transition, 1);
++			*r = *t;
++			Log_info("control", "Volume ramp after tone: generation=%u %.6f -> %.6f",
++				 t->generation, t->from, t->to);
++			volume_timer_ = g_timeout_add_full(G_PRIORITY_DEFAULT,
++				VOLUME_RAMP_TICK_MS, volume_ramp_tick, r, g_free);
++		}
++	}
++	pthread_mutex_unlock(&control_mutex);
++	g_free(t);
++}
++
++static gboolean volume_settle_fire(gpointer data) {
++	volume_transition *t = data;
++	int muted = 0;
++	pthread_mutex_lock(&control_mutex);
++	if (t->generation == volume_generation_) {
++		volume_timer_ = 0;
++		output_get_mute(&muted);
++		if (muted || !upnp_transport_is_playing() ||
++		    t->transport_generation != upnp_transport_generation()) {
++			volume_finish_locked(t);
++		} else {
++			volume_transition *job = g_new0(volume_transition, 1);
++			*job = *t;
++			Log_info("control", "Volume tone first: generation=%u target=%d old_gain=%.6f",
++				 t->generation, t->level, t->from);
++			output_beep(t->level >= 100, 70, t->from,
++				volume_beep_valid, volume_beep_done, job);
++		}
++	}
++	pthread_mutex_unlock(&control_mutex);
+ 	return G_SOURCE_REMOVE;
++}
++
++/* Invoked under service_lock by SOAP handlers. Repeated identical targets
++ * do not postpone the acknowledgement indefinitely. */
++static void volume_request_locked(int level, double gain) {
++	float current = gain;
++	int muted = 0;
++	volume_transition *t;
++	output_get_mute(&muted);
++	if (level == volume_target_level_ && gain == volume_target_gain_ &&
++	    (level == 0 || !muted)) return;
++	volume_cancel_locked();
++	volume_target_level_ = level;
++	volume_target_gain_ = gain;
++	output_get_volume(&current);
++	t = g_new0(volume_transition, 1);
++	t->generation = volume_generation_;
++	t->transport_generation = upnp_transport_generation();
++	t->from = current;
++	t->to = gain;
++	t->level = level;
++	if (muted || !upnp_transport_is_playing()) {
++		volume_finish_locked(t);
++		g_free(t);
++		return;
++	}
++	volume_timer_ = g_timeout_add_full(G_PRIORITY_DEFAULT, VOLUME_SETTLE_MS,
++		volume_settle_fire, t, g_free);
+ }
+ 
+ static void change_volume(const char *volume, const char *db_volume) {
+ 	replace_var(CONTROL_VAR_VOLUME, volume);
+ 	replace_var(CONTROL_VAR_VOLUME_DB, db_volume);
+ 	volume_state_save(atoi(volume));
+-
+-	volume_beep_level_ = atoi(volume);
+-	volume_beep_gain_ = volume_level_gain(volume_beep_level_);
+-	/* A new value while the music is still ducked: the caller is about
+-	 * to set the real volume anyway, so drop any pending ramp and just
+-	 * let the new value land (the ramp tick writes the *current* target,
+-	 * so cancelling it leaves the music at whatever the new SetVolume
+-	 * already wrote). */
+-	if (volume_duck_timer_ != 0) {
+-		g_source_remove(volume_duck_timer_);
+-		volume_duck_timer_ = 0;
+-	}
+-	if (volume_beep_timer_ != 0) {
+-		g_source_remove(volume_beep_timer_);
+-		volume_beep_timer_ = 0;
+-	}
+-	volume_beep_timer_ = g_timeout_add(VOLUME_BEEP_IDLE_MS,
+-					   volume_beep_fire, NULL);
+ }
+ 
+ static int cmd_obtain_variable(struct action_event *event,
+@@ -714,6 +690,8 @@
+ 	const char *value = upnp_get_string(event, "DesiredMute");
+ 	service_lock();
+ 	const int do_mute = atoi(value);
++	volume_cancel_locked();
++	if (volume_target_level_ >= 0) output_set_volume(volume_target_gain_);
+ 	set_mute_toggle(do_mute);
+ 	replace_var(CONTROL_VAR_MUTE, do_mute ? "1" : "0");
+ 	service_unlock();
+@@ -780,7 +758,7 @@
+ 	float raw_decibel_in = atof(str_decibel_in);
+ 	float decibel = change_volume_decibel(raw_decibel_in);
+ 
+-	output_set_volume(exp(decibel / 20 * log(10)));
++	volume_request_locked(volume_decibel_to_level(decibel), exp(decibel / 20 * log(10)));
+ 	service_unlock();
+ 
+ 	return 0;
+@@ -799,9 +777,10 @@
+ 
+ 	const double fraction = exp(decibel / 20 * log(10));
+ 
+-	change_volume(volume, db_volume);
+-	output_set_volume(fraction);
+-	set_mute_toggle(volume_level == 0);
++	char normalized[16];
++	snprintf(normalized, sizeof(normalized), "%d", volume_level);
++	change_volume(normalized, db_volume);
++	volume_request_locked(volume_level, fraction);
+ 	service_unlock();
+ 
+ 	return 0;
+--- a/src/upnp_transport.c
++++ b/src/upnp_transport.c
+@@ -402,6 +402,8 @@
+ 
+ // Our 'instance' variables.
+ static enum transport_state transport_state_ = TRANSPORT_STOPPED;
++static gint transport_playing_;
++static gint transport_generation_;
+ static variable_container_t *state_variables_ = NULL;
+ 
+ /* protects transport_values, and service-specific state */
+@@ -462,7 +464,11 @@
+ }
+ 
+ int upnp_transport_is_playing(void) {
+-	return transport_state_ == TRANSPORT_PLAYING;
++	return g_atomic_int_get(&transport_playing_);
++}
++
++int upnp_transport_generation(void) {
++	return g_atomic_int_get(&transport_generation_);
+ }
+ 
+ // Replace given variable without sending an state-change event.
+@@ -503,6 +509,8 @@
+ }
+ 
+ static void change_transport_state(enum transport_state new_state) {
++	if (transport_state_ != new_state) g_atomic_int_inc(&transport_generation_);
++	g_atomic_int_set(&transport_playing_, new_state == TRANSPORT_PLAYING);
+ 	transport_state_ = new_state;
+ 	assert(new_state >= TRANSPORT_STOPPED
+ 	       && new_state < TRANSPORT_NO_MEDIA_PRESENT);
+--- a/src/upnp_transport.h
++++ b/src/upnp_transport.h
+@@ -40,5 +40,6 @@
+ /* Non-zero while audio is actually flowing, so callers can avoid making
+  * noise when the renderer is merely idle. */
+ int upnp_transport_is_playing(void);
++int upnp_transport_generation(void);
+ 
+ #endif /* _UPNP_TRANSPORT_H */

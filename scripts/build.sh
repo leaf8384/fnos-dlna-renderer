@@ -26,7 +26,7 @@ MISSING=""
 for c in gcc make autoconf automake libtoolize pkg-config patch tar; do
 	command -v "$c" >/dev/null 2>&1 || MISSING="$MISSING $c"
 done
-for m in gstreamer-1.0 libupnp glib-2.0; do
+for m in gstreamer-1.0 gstreamer-app-1.0 libupnp glib-2.0; do
 	pkg-config --exists "$m" 2>/dev/null || MISSING="$MISSING dev:$m"
 done
 
@@ -35,7 +35,7 @@ if [ -n "$MISSING" ]; then
 
 Debian / Ubuntu 上执行：
   apt install -y build-essential autoconf automake libtool pkg-config \\
-                 libupnp-dev libgstreamer1.0-dev"
+                 libupnp-dev libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev"
 fi
 
 say "解压上游源码"

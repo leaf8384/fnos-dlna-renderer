@@ -1,5 +1,24 @@
 # 部署与恢复
 
+## 1.1.10 验证与维护
+
+- 音量请求先公布目标值，合并 180ms 内的连续操作；保持当前音乐增益播放 70ms 提示音，提示音排空后用 180ms 平滑到目标。取消压低/恢复音乐的 ducking。静音、暂停、停止以及新请求会使过期提示音任务失效。
+- `/api/now` 返回 `has_volume`、`has_position`、`has_media_info` 标记部分查询是否有效；设置页保留最后一次有效值，单次只发一个轮询，控制前发出的旧响应会被丢弃。`TrackURI` 与 `CurrentURI` 不一致时不采用进度。
+- 写接口要求 `Content-Type: application/json` 和 `X-DLNA-Request: 1`；浏览器还须通过同源校验。命令行调试 POST 也需带上述请求头。
+- 发布索引只选 manifest 指定版本的安装包，并检查包内 appname/version/platform；即使改名的旧包也会拒绝。
+
+验证命令（先构建渲染器，Go 与 Node 需在 PATH 中）：
+
+```bash
+(cd console && go test -race ./... && go vet ./...)
+python3 tests/test_release.py
+node tests/test_ui.cjs
+python3 tests/test_volume_sequence.py build/gmrender-resurrect-master
+python3 tests/test_renderer_integration.py --renderer build/gmrender-resurrect-master/src/gmediarender
+```
+
+最后一项使用独立端口 49610、独立 UUID、实时静音 sink 和 ALSA null 提示音，不改安装实例与音量存档。它验证真实 UPnP/GStreamer 的提示音先后顺序、过期任务取消、静音/暂停恢复及三轮 Seek+URI 切换；实际音箱听感仍需人工确认。
+
 这份文档回答一个问题：**换了机器、重装了飞牛、或者升级之后渲染器不见了，怎么最快恢复。**
 
 ## 当前生产环境的实际参数

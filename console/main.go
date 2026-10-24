@@ -2,7 +2,8 @@
 //
 // 职责：枚举硬件、读写 renderer.conf、重启渲染器让它生效、放测试音。
 // 不做的事：不做启停开关（交给应用中心的启用/停用）、不碰 gmediarender 的启动参数
-//          （那一律由 cmd/main 负责，见 restart-renderer 子命令）。
+//
+//	（那一律由 cmd/main 负责，见 restart-renderer 子命令）。
 //
 // 以 root 运行（要执行 aplay / ip、写配置、重启进程），因此只监听内网 IPv4，
 // 端口 8790 由 manifest 的 service_port 暴露给应用中心。
@@ -19,14 +20,17 @@ import (
 	"io"
 	"log"
 	"math"
+	"mime"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 )
@@ -301,10 +305,10 @@ func pcmBusy(cardIdx, dev int) bool {
 }
 
 type ifaceInfo struct {
-	Name      string `json:"name"`
-	IPv4      string `json:"ipv4"`
-	Default   bool   `json:"default"`
-	Recommended bool `json:"recommended"`
+	Name        string `json:"name"`
+	IPv4        string `json:"ipv4"`
+	Default     bool   `json:"default"`
+	Recommended bool   `json:"recommended"`
 }
 
 var skipIfacePrefix = []string{
@@ -483,13 +487,13 @@ func makeToneWAV(freq, seconds float64) []byte {
 	buf.WriteString("RIFF")
 	binary.Write(&buf, binary.LittleEndian, uint32(36+dataSize))
 	buf.WriteString("WAVEfmt ")
-	binary.Write(&buf, binary.LittleEndian, uint32(16))    // PCM 头长度
-	binary.Write(&buf, binary.LittleEndian, uint16(1))     // format = PCM
-	binary.Write(&buf, binary.LittleEndian, uint16(1))     // channels
-	binary.Write(&buf, binary.LittleEndian, uint32(rate))  // sample rate
+	binary.Write(&buf, binary.LittleEndian, uint32(16))     // PCM 头长度
+	binary.Write(&buf, binary.LittleEndian, uint16(1))      // format = PCM
+	binary.Write(&buf, binary.LittleEndian, uint16(1))      // channels
+	binary.Write(&buf, binary.LittleEndian, uint32(rate))   // sample rate
 	binary.Write(&buf, binary.LittleEndian, uint32(rate*2)) // byte rate
-	binary.Write(&buf, binary.LittleEndian, uint16(2))     // block align
-	binary.Write(&buf, binary.LittleEndian, uint16(16))    // bits
+	binary.Write(&buf, binary.LittleEndian, uint16(2))      // block align
+	binary.Write(&buf, binary.LittleEndian, uint16(16))     // bits
 	buf.WriteString("data")
 	binary.Write(&buf, binary.LittleEndian, uint32(dataSize))
 
@@ -611,23 +615,26 @@ func rendererHost(p paths) string {
 }
 
 type nowResp struct {
-	Running   bool   `json:"running"`
-	State     string `json:"state"`
-	Title     string `json:"title"`
-	Artist    string `json:"artist"`
-	Album     string `json:"album"`
-	Duration  int    `json:"duration"`
-	Position  int    `json:"position"`
-	Volume    int    `json:"volume"`
-	HasVolume bool   `json:"has_volume"`
-	HasMedia  bool   `json:"has_media"`
-	URI       string `json:"uri"`
-	Error     string `json:"error,omitempty"`
+	Running      bool   `json:"running"`
+	State        string `json:"state"`
+	Title        string `json:"title"`
+	Artist       string `json:"artist"`
+	Album        string `json:"album"`
+	Duration     int    `json:"duration"`
+	Position     int    `json:"position"`
+	Volume       int    `json:"volume"`
+	HasVolume    bool   `json:"has_volume"`
+	HasMedia     bool   `json:"has_media"`
+	HasPosition  bool   `json:"has_position"`
+	HasMediaInfo bool   `json:"has_media_info"`
+	URI          string `json:"uri"`
+	Error        string `json:"error,omitempty"`
 }
 
 func nowPlaying(p paths) nowResp {
-	res := nowResp{Running: rendererRunning(p), State: "STOPPED"}
+	res := nowResp{Running: rendererRunning(p)}
 	if !res.Running {
+		res.State = "STOPPED"
 		return res
 	}
 	host := rendererHost(p)
@@ -638,17 +645,25 @@ func nowPlaying(p paths) nowResp {
 		return res
 	}
 	res.State = tagValue(info, "CurrentTransportState")
+	positionURI := ""
 
 	if pos, err := soapCall(host, ctrlTransport, nsTransport, "GetPositionInfo", ""); err == nil {
 		res.Position = hmsToSec(tagValue(pos, "RelTime"))
 		res.Duration = hmsToSec(tagValue(pos, "TrackDuration"))
+		res.HasPosition = tagValue(pos, "RelTime") != ""
+		positionURI = tagValue(pos, "TrackURI")
 	}
 
 	// 曲名/艺人只能从 GetMediaInfo 拿 —— gmediarender 的 GetPositionInfo
 	// 根本不返回 CurrentTrackMetaData（实测响应里整段缺失，不是空值）。
 	if media, err := soapCall(host, ctrlTransport, nsTransport, "GetMediaInfo", ""); err == nil {
 		res.URI = tagValue(media, "CurrentURI")
+		res.HasMediaInfo = true
 		res.HasMedia = res.URI != ""
+		// A track can change between these SOAP calls: reject old progress.
+		if positionURI != res.URI {
+			res.HasPosition = false
+		}
 		meta := tagValue(media, "CurrentURIMetaData")
 		if meta != "" {
 			res.Title = tagValue(meta, "dc:title")
@@ -744,6 +759,37 @@ func writeJSON(w http.ResponseWriter, code int, v interface{}) {
 	json.NewEncoder(w).Encode(v)
 }
 
+// The iframe makes same-origin API requests even when fnOS hosts its parent
+// on a different port. Reject foreign origins and non-JSON simple requests;
+// the custom header forces a preflight that this server never permits.
+func protectWrites(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPost {
+			mediaType, _, err := mime.ParseMediaType(r.Header.Get("Content-Type"))
+			if err != nil || mediaType != "application/json" || r.Header.Get("X-DLNA-Request") != "1" {
+				writeJSON(w, http.StatusForbidden, map[string]interface{}{"ok": false, "message": "请求来源校验失败，请刷新设置页后重试"})
+				return
+			}
+			if origin := r.Header.Get("Origin"); origin != "" {
+				u, err := url.Parse(origin)
+				scheme := "http"
+				if r.TLS != nil {
+					scheme = "https"
+				}
+				if err != nil || u.Scheme != scheme || !strings.EqualFold(u.Host, r.Host) || u.User != nil || u.Path != "" || u.RawQuery != "" || u.Fragment != "" {
+					writeJSON(w, http.StatusForbidden, map[string]interface{}{"ok": false, "message": "不允许跨站修改设置"})
+					return
+				}
+			}
+			if site := r.Header.Get("Sec-Fetch-Site"); site != "" && site != "same-origin" && site != "none" {
+				writeJSON(w, http.StatusForbidden, map[string]interface{}{"ok": false, "message": "不允许跨站修改设置"})
+				return
+			}
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
 func main() {
 	log.SetFlags(log.LstdFlags)
 	p := resolvePaths()
@@ -766,6 +812,7 @@ func main() {
 	addr := net.JoinHostPort(bind, port)
 
 	mux := http.NewServeMux()
+	var configMu sync.Mutex
 
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/" {
@@ -889,6 +936,8 @@ func main() {
 			writeJSON(w, 405, map[string]interface{}{"ok": false, "message": "只接受 POST"})
 			return
 		}
+		configMu.Lock()
+		defer configMu.Unlock()
 		var req struct {
 			FriendlyName string `json:"friendly_name"`
 			Iface        string `json:"iface"`
@@ -971,7 +1020,7 @@ func main() {
 
 	srv := &http.Server{
 		Addr:              addr,
-		Handler:           mux,
+		Handler:           protectWrites(mux),
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 	log.Printf("dlna-console listening on http://%s", addr)

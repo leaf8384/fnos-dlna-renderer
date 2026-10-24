@@ -23,6 +23,18 @@
       "is_docker": false,
       "service_port": "8790",
       "releases": {
+        "1.1.10": {
+          "changelog": "音量交互改为先提示音、再平滑切换至目标音量，取消反复压低恢复；连续调节及静音取消过期任务。设置页保留有效状态、串行轮询并保护拖动，避免默认值与实际值闪跳。发布脚本校验包内版本，控制接口补跨站请求防护。",
+          "updated_at": "2026-10-24T21:30:02+08:00",
+          "os_min_version": "1.0.0",
+          "packages": {
+            "x86": {
+              "download_url": "https://github.com/leaf8384/fnos-dlna-renderer/releases/download/v1.1.10/dlna-renderer_v1.1.10_x86.fpk",
+              "sha256": "c18f5413d24423ce2308d354b5771527a1aca2949d2a337b56bf7406ef5c6b64",
+              "size": 2707338
+            }
+          }
+        },
         "1.1.9": {
           "changelog": "重做音量提示音的听感：ducking 从硬切改成 30ms 压/350ms 放的平滑斜坡，先压到位再响滴声；滴声换成带泛音的和弦式叮（基音+五度，首尾淡入淡出），满档高一个八度。音乐只做小幅平滑增益变化，音质不降。",
           "updated_at": "2026-10-24T21:00:00+08:00",

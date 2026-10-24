@@ -19,6 +19,7 @@ import argparse
 import hashlib
 import json
 import sys
+import tarfile
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -49,10 +50,32 @@ def pick_fpk(explicit: str | None) -> Path:
             sys.exit(f"找不到文件：{path}")
         return path
 
-    candidates = sorted(DIST_DIR.glob("*.fpk"), key=lambda p: p.stat().st_mtime, reverse=True)
-    if not candidates:
-        sys.exit("dist/ 下没有 fpk，先执行：bash scripts/package-fpk.sh")
-    return candidates[0]
+    expected = DIST_DIR / f"{manifest_value('appname')}_v{manifest_value('version')}_{manifest_value('platform') or 'x86'}.fpk"
+    if not expected.is_file():
+        sys.exit(f"缺少当前版本安装包：{expected.name}，请先打包；不会使用旧版本代替。")
+    return expected
+
+
+def verify_package(path: Path, appname: str, version: str, platform: str) -> None:
+    """Validate the archive itself, not its filename or modification time."""
+    try:
+        with tarfile.open(path, "r:gz") as archive:
+            entries = [m for m in archive.getmembers() if m.name.removeprefix("./") == "manifest"]
+            if len(entries) != 1 or not entries[0].isfile() or entries[0].size > 128 * 1024:
+                raise ValueError("包内 manifest 缺失、重复或无效")
+            stream = archive.extractfile(entries[0])
+            assert stream is not None
+            values = {}
+            for line in stream.read().decode("utf-8").splitlines():
+                if line.lstrip().startswith("#") or "=" not in line:
+                    continue
+                key, value = line.split("=", 1)
+                values[key.strip()] = value.strip()
+            for key, expected in (("appname", appname), ("version", version), ("platform", platform)):
+                if values.get(key) != expected:
+                    raise ValueError(f"{key} 不匹配：包内 {values.get(key)!r}，项目 {expected!r}")
+    except (OSError, tarfile.TarError, UnicodeError, ValueError) as exc:
+        sys.exit(f"拒绝更新索引：{exc}")
 
 
 def digest(path: Path) -> tuple[str, int]:
@@ -79,6 +102,7 @@ def main() -> int:
     if not appname or not version:
         sys.exit("manifest 里读不到 appname 或 version")
 
+    verify_package(fpk, appname, version, platform)
     sha256, size = digest(fpk)
     url = args.url or f"./dist/{fpk.name}"
 

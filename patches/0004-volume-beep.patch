@@ -21,7 +21,7 @@
  #include "output_gstreamer.h"
  
  static double buffer_duration = 0.0; /* Buffer disbled by default, see #182 */
-@@ -951,6 +952,186 @@
+@@ -951,6 +952,188 @@
  	}
  }
  
@@ -191,9 +191,11 @@
 +	if (music_gain <= 0.0f) {
 +		return;		/* silent by definition; stay quiet */
 +	}
-+	gain = 0.5 * (double) music_gain;
-+	if (gain > 0.5) {
-+		gain = 0.5;
++	/* 0.7 of the music keeps the tone clearly above it without
++	 * pushing the sum past full scale once the music is ducked. */
++	gain = 0.7 * (double) music_gain;
++	if (gain > 0.7) {
++		gain = 0.7;
 +	}
 +	job = g_new0(beep_job, 1);
 +	job->freq = (double) freq_hz;
@@ -257,7 +259,7 @@
 +/* The tone is 70ms long and the music is right next to it, so at anything
 + * but low volume the music simply buries it. Pull the music down to a
 + * third for the duration, then put it back (ducking). */
-+#define VOLUME_DUCK_PCT 30
++#define VOLUME_DUCK_PCT 20
 +#define VOLUME_DUCK_MS  200
 +
 +static guint volume_beep_timer_ = 0;

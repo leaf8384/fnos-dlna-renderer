@@ -22,6 +22,13 @@ log() {
 
 log "install_init 开始"
 
+# aplay -L 里 dmix 只以 "dmix" 或 "dmix:CARD=..." 出现。
+# "plug:dmix" 是我们主动拼的设备串（让 plug 帮做格式/采样率转换），
+# **不会出现在 aplay -L 列表里** —— 拿它去 grep 永远不匹配（1.1.7 栽过）。
+has_dmix() {
+	aplay -L 2>/dev/null | grep -qE '^(plug:)?dmix(:|$)'
+}
+
 # ---- 依赖 -------------------------------------------------------------
 # libupnp13 是 gmediarender 的硬依赖（ldd 能看到 libupnp.so.13），
 # alsa-utils 提供 aplay —— 设置页枚举声卡和放测试音都用它。
@@ -94,7 +101,7 @@ if [ ! -f "$CONF" ]; then
 	CARD=$(aplay -l 2>/dev/null | sed -n 's/^card [0-9]*: \([^ ]*\) \[.*/\1/p' | head -1)
 	# 优先 plug:dmix：调音量的提示音要和音乐同时出声，dmix 才允许第二个客户端。
 	# plughw 是独占的，第二个打开会 Device or resource busy。
-	if aplay -L 2>/dev/null | grep -qx 'plug:dmix'; then
+	if has_dmix; then
 		AUDIODEV="plug:dmix"
 	else
 		AUDIODEV="plughw:CARD=${CARD:-PCH},DEV=0"

@@ -236,7 +236,7 @@ func listCards() []soundCard {
 	// plug:dmix 是 ALSA 的软件混音层，不在 aplay -l 里，但它才是渲染器该用的设备：
 	// 手机调音量时的提示音要和音乐同时出声，只有 dmix 允许多个客户端同时打开。
 	// 放列表最前面，默认就是它。
-	if hasPCM("plug:dmix") {
+	if hasDmix() {
 		cards = append(cards, soundCard{
 			Value: "plug:dmix",
 			Card:  "dmix",
@@ -270,14 +270,19 @@ func listCards() []soundCard {
 	return cards
 }
 
-// aplay -L 里有没有这个 PCM 名（dmix 这类插件不在 aplay -l 的硬件列表里）
-func hasPCM(name string) bool {
+// dmix 可用吗。注意 aplay -L 里 dmix 只以 "dmix" 或 "dmix:CARD=..." 出现，
+// 而渲染器用的是我们自己拼的 "plug:dmix"（让 plug 帮做格式/采样率转换）——
+// 拿 "plug:dmix" 去比对永远不匹配，1.1.7 就是在这里判断失灵，
+// 结果设备没切过去、提示音被独占的 plughw 挡住。
+func hasDmix() bool {
 	out, err := exec.Command("aplay", "-L").Output()
 	if err != nil {
 		return false
 	}
 	for _, line := range strings.Split(string(out), "\n") {
-		if strings.TrimSpace(line) == name {
+		s := strings.TrimSpace(line)
+		if s == "dmix" || strings.HasPrefix(s, "dmix:") ||
+			s == "plug:dmix" || strings.HasPrefix(s, "plug:dmix:") {
 			return true
 		}
 	}

@@ -58,6 +58,13 @@ detect_iface() {
 	printf '%s' "${i:-enp5s0}"
 }
 
+# aplay -L 里 dmix 只以 "dmix" 或 "dmix:CARD=..." 的形式出现。
+# "plug:dmix" 是我们主动拼出来的设备串（让 plug 帮我们做格式/采样率转换），
+# **它不会出现在 aplay -L 的列表里** —— 拿它去 grep 永远不匹配（1.1.7 就栽在这）。
+has_dmix() {
+	aplay -L 2>/dev/null | grep -qE '^(plug:)?dmix(:|$)'
+}
+
 # 用声卡名字而不是序号：重启后 card 编号会变，名字不会
 # 优先 plug:dmix 而不是 plughw：调音量的提示音要和音乐同时出声，
 # dmix 才允许第二个客户端；plughw 是独占的，第二个打开直接被拒。
@@ -65,7 +72,7 @@ detect_iface() {
 detect_audiodev() {
 	local name
 	name=$(aplay -l 2>/dev/null | sed -n 's/^card [0-9]*: \([^ ]*\) \[.*/\1/p' | head -1)
-	if aplay -L 2>/dev/null | grep -qx 'plug:dmix'; then
+	if has_dmix; then
 		printf 'plug:dmix'
 		return
 	fi
@@ -102,7 +109,7 @@ migrate_audiodev() {
 	*plughw:*|*hw:*) ;;
 	*) return 0 ;;
 	esac
-	aplay -L 2>/dev/null | grep -qx 'plug:dmix' || return 0
+	has_dmix || return 0
 	first=$(aplay -l 2>/dev/null | sed -n 's/^card [0-9]*: \([^ ]*\) \[.*/\1/p' | head -1)
 	case "$AUDIODEV" in
 	"plughw:CARD=${first:-PCH},DEV=0"|plughw:0,0|hw:0,0) ;;

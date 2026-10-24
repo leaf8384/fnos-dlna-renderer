@@ -30,8 +30,8 @@
           "packages": {
             "x86": {
               "download_url": "https://github.com/leaf8384/fnos-dlna-renderer/releases/download/v1.1.10/dlna-renderer_v1.1.10_x86.fpk",
-              "sha256": "c18f5413d24423ce2308d354b5771527a1aca2949d2a337b56bf7406ef5c6b64",
-              "size": 2707338
+              "sha256": "75424b691d87194677089c603fd74e59b7c4b2e167b50b14d4ef93f3758cccca",
+              "size": 2852644
             }
           }
         },

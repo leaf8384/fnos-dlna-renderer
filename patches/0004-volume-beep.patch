@@ -1,19 +1,29 @@
 --- a/src/output.h
 +++ b/src/output.h
-@@ -59,4 +59,10 @@
+@@ -59,4 +59,12 @@
  int output_get_mute(int *m);
  int output_set_mute(int m);
  
 +/* Play a short confirmation tone, mixed with whatever is currently
-+ * playing. music_gain is the linear gain the music is playing at right
-+ * now (the same number given to output_set_volume); the tone is rendered
-+ * at a fixed fraction of it so it follows the volume. Does not block. */
-+void output_beep(int freq_hz, int duration_ms, float music_gain);
++ * playing. `which` selects the tone: 0 = normal chime, non-zero = the
++ * full-scale (octave-up) chime. `music_gain` is the linear gain the music
++ * is playing at right now (the same number given to output_set_volume);
++ * the tone is rendered at a fixed fraction of it so it follows the volume.
++ * Does not block. */
++void output_beep(int which, int duration_ms, float music_gain);
 +
  #endif /* _OUTPUT_H */
 --- a/src/output_gstreamer.c
 +++ b/src/output_gstreamer.c
-@@ -40,6 +40,7 @@
+@@ -30,6 +30,7 @@
+ 
+ #include <assert.h>
+ #include <gst/gst.h>
++#include <gst/app/gstappsrc.h>
+ #include <math.h>
+ #include <stdio.h>
+ #include <stdlib.h>
+@@ -40,6 +41,7 @@
  #include "logging.h"
  #include "upnp_connmgr.h"
  #include "output_module.h"
@@ -21,7 +31,7 @@
  #include "output_gstreamer.h"
  
  static double buffer_duration = 0.0; /* Buffer disbled by default, see #182 */
-@@ -951,6 +952,188 @@
+@@ -951,6 +953,247 @@
  	}
  }
  
@@ -38,14 +48,33 @@
 + * throwaway pipeline of its own that shares the sound card with the music
 + * through ALSA dmix. No shared state, nothing to un-wire, and if it fails
 + * the music is untouched.
++ *
++ * The waveform is generated in C (not by audiotestsrc) so the attack and
++ * release can be faded in/out: a hard sine start/stop clicks audibly on a
++ * speaker even when the length is an integral number of periods, because
++ * the signal still jumps from silence to a full-amplitude sample. Fading
++ * 4 ms at each end removes the click and makes the tone sound like a soft
++ * "ting" instead of a square-edged "beep".
 + */
 +
 +#define BEEP_RATE 44100
 +
++/* Frequencies that divide 44100 exactly, so the whole-period trick lines
++ * up on a sample boundary and there is no discontinuity at the loop point.
++ * A fundamental plus a 3:2 fifth sounds like a chime; the "full" variant is
++ * one octave up, clearly distinguishable from the normal one. */
 +typedef struct {
-+	double freq;
++	double f1;	/* fundamental */
++	double f2;	/* 3:2 fifth above the fundamental */
++} beep_tone;
++
++static const beep_tone BEEP_NORMAL = { 882.0, 1323.0 };
++static const beep_tone BEEP_FULL   = { 1764.0, 2646.0 };
++
++typedef struct {
++	const beep_tone *tone;
 +	int    duration_ms;
-+	double volume;
++	double volume;	/* linear gain applied to the tone itself */
 +} beep_job;
 +
 +static GstElement *beep_make(const char *factory) {
@@ -57,89 +86,124 @@
 +}
 +
 +static void beep_unref_all(GstElement *a, GstElement *b, GstElement *c,
-+			   GstElement *d, GstElement *e, GstElement *f) {
++			   GstElement *d, GstElement *e) {
 +	if (a != NULL) gst_object_unref(a);
 +	if (b != NULL) gst_object_unref(b);
 +	if (c != NULL) gst_object_unref(c);
 +	if (d != NULL) gst_object_unref(d);
 +	if (e != NULL) gst_object_unref(e);
-+	if (f != NULL) gst_object_unref(f);
++}
++
++/* Build the stereo PCM for one chime. Both channels carry the same signal
++ * (a fundamental plus a softer fifth); the whole thing is faded in/out by
++ * FADE_MS at each end. Returns a newly allocated GstBuffer. */
++#define BEEP_FADE_MS 4
++
++static GstBuffer *beep_build_buffer(const beep_tone *tone, int duration_ms) {
++	int n = (int) ((double) BEEP_RATE * duration_ms / 1000.0 + 0.5);
++	int fade = (int) ((double) BEEP_RATE * BEEP_FADE_MS / 1000.0 + 0.5);
++	gint16 *pcm;
++	GstBuffer *buf;
++	GstMapInfo map;
++	int i;
++	double a1 = 0.6;	/* fundamental */
++	double a2 = 0.25;	/* fifth, quieter so it just colours */
++
++	if (fade < 1) fade = 1;
++	if (n < 2 * fade) n = 2 * fade;
++
++	buf = gst_buffer_new_allocate(NULL, (gsize) n * 2 * 2, NULL);
++	if (!gst_buffer_map(buf, &map, GST_MAP_WRITE)) {
++		gst_buffer_unref(buf);
++		return NULL;
++	}
++	pcm = (gint16 *) map.data;
++
++	for (i = 0; i < n; i++) {
++		double env = 1.0;
++		double v;
++		if (i < fade) {
++			env = (double) i / fade;
++		} else if (i >= n - fade) {
++			env = (double) (n - 1 - i) / fade;
++		}
++		v = env * (a1 * sin(2.0 * G_PI * tone->f1 * i / BEEP_RATE)
++			   + a2 * sin(2.0 * G_PI * tone->f2 * i / BEEP_RATE));
++		/* clamp into 16-bit, then mirror to both channels */
++		{
++			gint16 s;
++			if (v > 1.0) v = 1.0;
++			if (v < -1.0) v = -1.0;
++			s = (gint16) (v * 32767.0);
++			pcm[2 * i] = s;
++			pcm[2 * i + 1] = s;
++		}
++	}
++	gst_buffer_unmap(buf, &map);
++	return buf;
 +}
 +
 +static gpointer beep_thread(gpointer data) {
 +	beep_job *job = (beep_job *) data;
-+	GstElement *pipeline = NULL, *src = NULL, *filt = NULL, *conv = NULL,
-+		   *res = NULL, *vol = NULL, *sink = NULL;
++	GstElement *pipeline = NULL, *src = NULL, *conv = NULL,
++		   *vol = NULL, *sink = NULL;
 +	GstBus *bus = NULL;
 +	GstMessage *msg = NULL;
 +	GstCaps *caps;
-+	int period, samples;
++	GstBuffer *buf = NULL;
 +	gboolean in_bin = FALSE;
 +	gboolean got_eos = FALSE;
 +
-+	/* An integral number of periods means the tone ends on a zero
-+	 * crossing. Cutting a sine anywhere else leaves a step in the
-+	 * waveform, which on this speaker is an audible click. */
-+	period = (int) (BEEP_RATE / job->freq + 0.5);
-+	if (period < 1) {
-+		period = 1;
-+	}
-+	samples = (int) ((double) BEEP_RATE * job->duration_ms / 1000.0 + 0.5);
-+	samples = (samples / period) * period;
-+	if (samples < period) {
-+		samples = period;
-+	}
-+
-+	pipeline = beep_make("pipeline");
-+	src  = beep_make("audiotestsrc");
-+	filt = beep_make("capsfilter");
-+	conv = beep_make("audioconvert");
-+	res  = beep_make("audioresample");
-+	vol  = beep_make("volume");
-+	sink = beep_make("alsasink");
-+	if (pipeline == NULL || src == NULL || filt == NULL || conv == NULL ||
-+	    res == NULL || vol == NULL || sink == NULL) {
++	buf = beep_build_buffer(job->tone, job->duration_ms);
++	if (buf == NULL) {
 +		goto done;
 +	}
 +
-+	/* audiotestsrc has no "caps" property (and no sample-rate/channels
-+	 * either) in GStreamer 1.22, so the format is pinned downstream.
-+	 * Fixing the rate matters twice over: `samples` is a sample count at
-+	 * BEEP_RATE, and the whole-period trick only lines up if the rate is
-+	 * the one it was computed for. */
++	pipeline = beep_make("pipeline");
++	src  = beep_make("appsrc");
++	conv = beep_make("audioconvert");
++	vol  = beep_make("volume");
++	sink = beep_make("alsasink");
++	if (pipeline == NULL || src == NULL || conv == NULL ||
++	    vol == NULL || sink == NULL) {
++		goto done;
++	}
++
++	/* We generate exactly what we want: S16LE / stereo / 44100. Pinning the
++	 * caps downstream means appsrc feeds the data through unchanged — no
++	 * resample, no bit-depth change, nothing that could colour the music.
++	 * (appsasink's device is plug:dmix, which is already pinned to 44100 in
++	 * /etc/asound.conf, so the two agree and there is no conversion.) */
 +	caps = gst_caps_new_simple("audio/x-raw",
 +				   "format", G_TYPE_STRING, "S16LE",
 +				   "layout", G_TYPE_STRING, "interleaved",
 +				   "rate", G_TYPE_INT, BEEP_RATE,
 +				   "channels", G_TYPE_INT, 2,
 +				   NULL);
-+	g_object_set(filt, "caps", caps, NULL);
++	g_object_set(src, "caps", caps, NULL);
 +	gst_caps_unref(caps);
-+
-+	/* One buffer of exactly `samples` frames, then end-of-stream. */
-+	g_object_set(src,
-+		     "wave", 0,			/* sine */
-+		     "freq", job->freq,
-+		     "volume", 1.0,
-+		     "samplesperbuffer", samples,
-+		     "num-buffers", 1,
-+		     NULL);
++	g_object_set(src, "format", GST_FORMAT_TIME, NULL);
 +	g_object_set(vol, "volume", job->volume, NULL);
 +	if (audio_device != NULL) {
-+		/* Same device as the music, so dmix mixes the two. */
 +		g_object_set(sink, "device", audio_device, NULL);
 +	}
 +
-+	gst_bin_add_many(GST_BIN(pipeline), src, filt, conv, res, vol, sink, NULL);
++	gst_bin_add_many(GST_BIN(pipeline), src, conv, vol, sink, NULL);
 +	in_bin = TRUE;
-+	if (!gst_element_link_many(src, filt, conv, res, vol, sink, NULL)) {
++	if (!gst_element_link_many(src, conv, vol, sink, NULL)) {
 +		Log_info("gstreamer", "beep: linking failed, tone skipped");
 +		goto done;
 +	}
 +
 +	bus = gst_element_get_bus(pipeline);
 +	gst_element_set_state(pipeline, GST_STATE_PLAYING);
-+	/* EOS normally arrives right after the single buffer; the timeout only
++	/* Hand the single buffer over, then end the stream so EOS flows and we
++	 * can tear the pipeline down cleanly. */
++	gst_app_src_push_buffer(GST_APP_SRC(src), buf);
++	buf = NULL;	/* ownership moved to appsrc */
++	gst_app_src_end_of_stream(GST_APP_SRC(src));
++
++	/* EOS normally arrives right after the buffer drains; the timeout only
 +	 * exists so that a wedged sink cannot leak this thread forever. */
 +	msg = gst_bus_timed_pop_filtered(bus,
 +			(GstClockTime) (job->duration_ms + 1500) * GST_MSECOND,
@@ -162,6 +226,9 @@
 +	}
 +
 +done:
++	if (buf != NULL) {
++		gst_buffer_unref(buf);
++	}
 +	if (bus != NULL) {
 +		gst_object_unref(bus);
 +	}
@@ -169,12 +236,11 @@
 +		if (got_eos) {
 +			/* Let dmix push the tail out before the handle goes
 +			 * away; closing early chops the tone mid-wave. */
-+			g_usleep(200 * 1000);
++			g_usleep(150 * 1000);
 +		}
-+		/* Going to NULL closes the ALSA handle so dmix drops us. */
 +		gst_element_set_state(pipeline, GST_STATE_NULL);
 +	} else {
-+		beep_unref_all(src, filt, conv, res, vol, sink);
++		beep_unref_all(src, conv, vol, sink, NULL);
 +	}
 +	if (pipeline != NULL) {
 +		gst_object_unref(pipeline);
@@ -183,7 +249,7 @@
 +	return NULL;
 +}
 +
-+void output_beep(int freq_hz, int duration_ms, float music_gain) {
++void output_beep(int which, int duration_ms, float music_gain) {
 +	beep_job *job;
 +	GThread *thread;
 +	double gain;
@@ -191,14 +257,17 @@
 +	if (music_gain <= 0.0f) {
 +		return;		/* silent by definition; stay quiet */
 +	}
-+	/* 0.7 of the music keeps the tone clearly above it without
-+	 * pushing the sum past full scale once the music is ducked. */
-+	gain = 0.7 * (double) music_gain;
-+	if (gain > 0.7) {
-+		gain = 0.7;
++	/* The tone rides at a fixed ratio below the music. Because the music is
++	 * ducked first (see upnp_control.c), this needs to be loud enough to be
++	 * unmistakable but not so loud that it clips when summed with the ducked
++	 * music: 0.7 * music at full scale sums with 0.4 * music to 1.1, which
++	 * is just over full scale — so cap it at 0.6 so the sum stays ≤ 1.0. */
++	gain = 0.6 * (double) music_gain;
++	if (gain > 0.6) {
++		gain = 0.6;
 +	}
 +	job = g_new0(beep_job, 1);
-+	job->freq = (double) freq_hz;
++	job->tone = (which != 0) ? &BEEP_FULL : &BEEP_NORMAL;
 +	job->duration_ms = duration_ms;
 +	job->volume = gain;
 +
@@ -244,7 +313,7 @@
  #include "xmlescape.h"
  #include "variable-container.h"
  
-@@ -434,11 +435,92 @@
+@@ -434,11 +435,175 @@
  }
  
  static void volume_state_save(int level);
@@ -256,11 +325,22 @@
 + * them. Waiting for the value to settle turns that into one beep instead
 + * of a machine gun. */
 +#define VOLUME_BEEP_IDLE_MS 400
-+/* The tone is 70ms long and the music is right next to it, so at anything
-+ * but low volume the music simply buries it. Pull the music down to a
-+ * third for the duration, then put it back (ducking). */
-+#define VOLUME_DUCK_PCT 20
-+#define VOLUME_DUCK_MS  200
++
++/* ---- ducking: pull the music down before the tone, ramp it back after.
++ *
++ * Why a ramp instead of a hard step: a step makes the music audibly "cut"
++ * and then snap back, which is exactly the pumping artefact listeners
++ * describe as cheap. A short attack (~30 ms) and a gentler release
++ * (~350 ms) make the dip feel like a breath instead of a glitch.
++ *
++ * Depth is deliberately shallow: the tone itself is what should stand out,
++ * not the hole in the music. -8 dB (×0.4) is enough to clear the tone
++ * without making the music disappear. */
++#define VOLUME_DUCK_GAIN   0.40		/* ×0.4 ≈ -8 dB while ducked */
++#define VOLUME_DUCK_ATTACK_MS 30	/* time to ramp down */
++#define VOLUME_DUCK_HOLD_MS    70	/* time at full duck (covers the tone) */
++#define VOLUME_DUCK_RELEASE_MS 350	/* time to ramp back up */
++#define VOLUME_DUCK_STEP_MS    10	/* ramp tick */
 +
 +static guint volume_beep_timer_ = 0;
 +static guint volume_duck_timer_ = 0;
@@ -276,12 +356,73 @@
 +	return exp(volume_level_to_decibel(level) / 20 * log(10));
 +}
 +
-+static gboolean volume_unduck(gpointer data) {
++/* One tick of the ducking ramp. `data` is a pointer to a small struct that
++ * describes where we are going; the callback advances the music gain one
++ * step toward the target and reschedules itself until it arrives. */
++typedef struct {
++	double from;
++	double to;
++	int    step;		/* current step index */
++	int    steps;		/* total steps */
++} duck_ramp;
++
++static gboolean duck_ramp_tick(gpointer data) {
++	duck_ramp *r = (duck_ramp *) data;
++	double t, g;
++	r->step++;
++	if (r->step >= r->steps) {
++		t = 1.0;
++	} else {
++		t = (double) r->step / (double) r->steps;
++	}
++	g = r->from + (r->to - r->from) * t;
++
++	pthread_mutex_lock(&control_mutex);
++	output_set_volume(g);
++	pthread_mutex_unlock(&control_mutex);
++
++	if (r->step >= r->steps) {
++		g_free(r);
++		return G_SOURCE_REMOVE;
++	}
++	return G_SOURCE_CONTINUE;
++}
++
++static void duck_ramp_start(double from, double to, int ms) {
++	duck_ramp *r = g_new0(duck_ramp, 1);
++	int steps = ms / VOLUME_DUCK_STEP_MS;
++	if (steps < 1) {
++		steps = 1;
++	}
++	r->from = from;
++	r->to = to;
++	r->step = 0;
++	r->steps = steps;
++	volume_duck_timer_ = g_timeout_add(VOLUME_DUCK_STEP_MS,
++					   duck_ramp_tick, r);
++}
++
++/* After the attack ramp finishes, the music is at full duck: now is the
++ * moment the tone sounds, so it is not fighting the music. */
++typedef struct {
++	int   level;
++	double gain;
++} duck_then_beep;
++
++static gboolean duck_then_beep_fire(gpointer data) {
++	duck_then_beep *p = (duck_then_beep *) data;
++	/* Full scale gets a distinctly higher (octave-up) tone. */
++	output_beep(p->level >= 100 ? 1 : 0, 70, p->gain);
++	g_free(p);
++	return G_SOURCE_REMOVE;
++}
++
++/* The tone has sounded; wait out the hold, then ramp the music back. */
++static gboolean duck_release_fire(gpointer data) {
 +	(void)data;
 +	volume_duck_timer_ = 0;
-+	pthread_mutex_lock(&control_mutex);
-+	output_set_volume(volume_beep_gain_);
-+	pthread_mutex_unlock(&control_mutex);
++	duck_ramp_start(volume_beep_gain_ * VOLUME_DUCK_GAIN,
++			volume_beep_gain_, VOLUME_DUCK_RELEASE_MS);
 +	return G_SOURCE_REMOVE;
 +}
 +
@@ -298,20 +439,28 @@
 +	 * collection, and we are not changing any variable here. */
 +	pthread_mutex_lock(&control_mutex);
 +	output_get_mute(&muted);
-+	if (!muted) {
-+		/* Music out of the way first. */
-+		output_set_volume(volume_beep_gain_ * VOLUME_DUCK_PCT / 100.0);
-+		if (volume_duck_timer_ != 0) {
-+			g_source_remove(volume_duck_timer_);
-+		}
-+		volume_duck_timer_ = g_timeout_add(VOLUME_DUCK_MS,
-+						   volume_unduck, NULL);
-+		/* Full scale gets a distinctly higher tone, so "max" is
-+		 * audible without looking at the phone. */
-+		output_beep(volume_beep_level_ >= 100 ? 1764 : 882, 70,
-+			    volume_beep_gain_);
-+	}
 +	pthread_mutex_unlock(&control_mutex);
++	if (muted) {
++		return G_SOURCE_REMOVE;
++	}
++
++	{
++		duck_then_beep *p = g_new0(duck_then_beep, 1);
++		p->level = volume_beep_level_;
++		p->gain = volume_beep_gain_;
++
++		/* 1) ramp the music down... */
++		duck_ramp_start(volume_beep_gain_,
++				volume_beep_gain_ * VOLUME_DUCK_GAIN,
++				VOLUME_DUCK_ATTACK_MS);
++		/* 2) ...sound the tone once the dip has landed... */
++		g_timeout_add(VOLUME_DUCK_ATTACK_MS + VOLUME_DUCK_STEP_MS,
++			      duck_then_beep_fire, p);
++		/* 3) ...hold, then ramp back up. */
++		g_timeout_add(VOLUME_DUCK_ATTACK_MS + VOLUME_DUCK_HOLD_MS
++			      + VOLUME_DUCK_STEP_MS,
++			      duck_release_fire, NULL);
++	}
 +	return G_SOURCE_REMOVE;
 +}
  
@@ -323,7 +472,10 @@
 +	volume_beep_level_ = atoi(volume);
 +	volume_beep_gain_ = volume_level_gain(volume_beep_level_);
 +	/* A new value while the music is still ducked: the caller is about
-+	 * to set the real volume anyway, so just drop the pending restore. */
++	 * to set the real volume anyway, so drop any pending ramp and just
++	 * let the new value land (the ramp tick writes the *current* target,
++	 * so cancelling it leaves the music at whatever the new SetVolume
++	 * already wrote). */
 +	if (volume_duck_timer_ != 0) {
 +		g_source_remove(volume_duck_timer_);
 +		volume_duck_timer_ = 0;

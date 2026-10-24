@@ -20,7 +20,7 @@
  #include "output_gstreamer.h"
  
  static double buffer_duration = 0.0; /* Buffer disbled by default, see #182 */
-@@ -951,6 +952,175 @@
+@@ -951,6 +952,183 @@
  	}
  }
  
@@ -56,18 +56,19 @@
 +}
 +
 +static void beep_unref_all(GstElement *a, GstElement *b, GstElement *c,
-+			   GstElement *d, GstElement *e) {
++			   GstElement *d, GstElement *e, GstElement *f) {
 +	if (a != NULL) gst_object_unref(a);
 +	if (b != NULL) gst_object_unref(b);
 +	if (c != NULL) gst_object_unref(c);
 +	if (d != NULL) gst_object_unref(d);
 +	if (e != NULL) gst_object_unref(e);
++	if (f != NULL) gst_object_unref(f);
 +}
 +
 +static gpointer beep_thread(gpointer data) {
 +	beep_job *job = (beep_job *) data;
-+	GstElement *pipeline = NULL, *src = NULL, *conv = NULL, *res = NULL,
-+		   *vol = NULL, *sink = NULL;
++	GstElement *pipeline = NULL, *src = NULL, *filt = NULL, *conv = NULL,
++		   *res = NULL, *vol = NULL, *sink = NULL;
 +	GstBus *bus = NULL;
 +	GstMessage *msg = NULL;
 +	GstCaps *caps;
@@ -90,40 +91,47 @@
 +
 +	pipeline = beep_make("pipeline");
 +	src  = beep_make("audiotestsrc");
++	filt = beep_make("capsfilter");
 +	conv = beep_make("audioconvert");
 +	res  = beep_make("audioresample");
 +	vol  = beep_make("volume");
 +	sink = beep_make("alsasink");
-+	if (pipeline == NULL || src == NULL || conv == NULL || res == NULL ||
-+	    vol == NULL || sink == NULL) {
++	if (pipeline == NULL || src == NULL || filt == NULL || conv == NULL ||
++	    res == NULL || vol == NULL || sink == NULL) {
 +		goto done;
 +	}
 +
++	/* audiotestsrc has no "caps" property (and no sample-rate/channels
++	 * either) in GStreamer 1.22, so the format is pinned downstream.
++	 * Fixing the rate matters twice over: `samples` is a sample count at
++	 * BEEP_RATE, and the whole-period trick only lines up if the rate is
++	 * the one it was computed for. */
 +	caps = gst_caps_new_simple("audio/x-raw",
 +				   "format", G_TYPE_STRING, "S16LE",
 +				   "layout", G_TYPE_STRING, "interleaved",
 +				   "rate", G_TYPE_INT, BEEP_RATE,
 +				   "channels", G_TYPE_INT, 2,
 +				   NULL);
++	g_object_set(filt, "caps", caps, NULL);
++	gst_caps_unref(caps);
++
 +	/* One buffer of exactly `samples` frames, then end-of-stream. */
 +	g_object_set(src,
 +		     "wave", 0,			/* sine */
 +		     "freq", job->freq,
 +		     "volume", 1.0,
-+		     "caps", caps,
 +		     "samplesperbuffer", samples,
 +		     "num-buffers", 1,
 +		     NULL);
-+	gst_caps_unref(caps);
 +	g_object_set(vol, "volume", job->volume, NULL);
 +	if (audio_device != NULL) {
 +		/* Same device as the music, so dmix mixes the two. */
 +		g_object_set(sink, "device", audio_device, NULL);
 +	}
 +
-+	gst_bin_add_many(GST_BIN(pipeline), src, conv, res, vol, sink, NULL);
++	gst_bin_add_many(GST_BIN(pipeline), src, filt, conv, res, vol, sink, NULL);
 +	in_bin = TRUE;
-+	if (!gst_element_link_many(src, conv, res, vol, sink, NULL)) {
++	if (!gst_element_link_many(src, filt, conv, res, vol, sink, NULL)) {
 +		Log_info("gstreamer", "beep: linking failed, tone skipped");
 +		goto done;
 +	}
@@ -165,7 +173,7 @@
 +		/* Going to NULL closes the ALSA handle so dmix drops us. */
 +		gst_element_set_state(pipeline, GST_STATE_NULL);
 +	} else {
-+		beep_unref_all(src, conv, res, vol, sink);
++		beep_unref_all(src, filt, conv, res, vol, sink);
 +	}
 +	if (pipeline != NULL) {
 +		gst_object_unref(pipeline);

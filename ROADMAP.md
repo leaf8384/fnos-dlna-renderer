@@ -149,8 +149,14 @@ Restarting playbin (wrong-state) ...
 - **音的时长取整数个周期**：`period = round(44100/freq)`，`samples` 向下取到 period 的整数倍。
   频率选 44100 的整除数（普通 **882Hz**＝50 samples/周期，满档 **1764Hz**＝25 samples/周期），
   这样波形正好收在过零点，不会因为截断出现爆音开关声。
-- 用 `audiotestsrc` 的 `caps` + `samplesperbuffer=N` + `num-buffers=1`：一次吐一整段然后 EOS，
+- 用 `audiotestsrc` 的 `samplesperbuffer=N` + `num-buffers=1`：一次吐一整段然后 EOS，
   不用做 fade 包络。
+- ⚠️ **`audiotestsrc` 没有 `caps` 属性**（GStreamer 1.22 实测），也没有 `sample-rate` /
+  `channels` / `format`。想固定格式只能在它后面串一个 `capsfilter`，否则
+  `g_object_set(src, "caps", ...)` 只会打一条 `object class has no property named 'caps'`
+  警告然后什么都不做——**静默失效**，采样率交给下游协商。而下游是 dmix 时很可能协商成 48k，
+  上面那条「整周期」的算法就错位了（会爆音），时长也不对。1.1.7 第一次发版就栽在这里，
+  用 `gst-inspect-1.0 audiotestsrc | grep '^  caps'` 一查就露。
 - **跟随主音量**：`playbin` 的 volume 是线性增益，所以提示音也走线性
   `volume = 0.5 * level_pct / 100`，相对音乐保持固定比例。
 - 触发点仍在 `upnp_control.c` 的 `change_volume()`，**防抖 400ms**：一次按键发一个 SetVolume、

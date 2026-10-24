@@ -1,0 +1,298 @@
+--- a/src/output.h
++++ b/src/output.h
+@@ -59,4 +59,8 @@
+ int output_get_mute(int *m);
+ int output_set_mute(int m);
+ 
++/* Play a short confirmation tone. The caller decides when that makes
++ * sense; this only knows how to make the noise. */
++void output_beep(int freq_hz, int duration_ms);
++
+ #endif /* _OUTPUT_H */
+--- a/src/output_gstreamer.c
++++ b/src/output_gstreamer.c
+@@ -40,6 +40,7 @@
+ #include "logging.h"
+ #include "upnp_connmgr.h"
+ #include "output_module.h"
++#include "output.h"
+ #include "output_gstreamer.h"
+ 
+ static double buffer_duration = 0.0; /* Buffer disbled by default, see #182 */
+@@ -162,6 +163,14 @@
+ /* kept so that a NULL rebuild can install the very same sink again instead
+  * of silently falling back to autoaudiosink */
+ static GstElement *audio_sink_element_ = NULL;
++
++/* The phone never tells the user which volume it just set on us, so a
++ * short tone is the only feedback there is. The tone generator runs
++ * permanently at zero and is mixed into the same alsasink as the music,
++ * which makes it scale with the volume the user just picked. */
++static GstElement *beep_src_ = NULL;
++static GstElement *beep_alsasink_ = NULL;
++static guint beep_off_timer_ = 0;
+ 
+ static GstState get_current_player_state() {
+ 	GstState state = GST_STATE_PLAYING;
+@@ -898,27 +907,49 @@
+ 	return rc;
+ }
+ 
++/* With the beep mixer in place the gain lives on the sink: that attenuates
++ * the mixed signal as a whole, so the confirmation tone follows the volume
++ * instead of blasting through at constant level. playbin's own "volume"
++ * does not reach into a custom sink bin, hence the two branches. */
+ static int output_gstreamer_get_volume(float *v) {
+ 	double volume;
+-	g_object_get(player_, "volume", &volume, NULL);
++	if (beep_alsasink_ != NULL) {
++		g_object_get(beep_alsasink_, "volume", &volume, NULL);
++	} else {
++		g_object_get(player_, "volume", &volume, NULL);
++	}
+ 	Log_info("gstreamer", "Query volume fraction: %f", volume);
+ 	*v = volume;
+ 	return 0;
+ }
+ static int output_gstreamer_set_volume(float value) {
+ 	Log_info("gstreamer", "Set volume fraction to %f", value);
+-	g_object_set(player_, "volume", (double) value, NULL);
++	if (beep_alsasink_ != NULL) {
++		g_object_set(beep_alsasink_, "volume", (double) value, NULL);
++	} else {
++		g_object_set(player_, "volume", (double) value, NULL);
++	}
+ 	return 0;
+ }
++/* Same reasoning as volume: playbin's mute does not reach into a custom
++ * sink bin, so the sink has to carry it. */
+ static int output_gstreamer_get_mute(int *m) {
+ 	gboolean val;
+-	g_object_get(player_, "mute", &val, NULL);
++	if (beep_alsasink_ != NULL) {
++		g_object_get(beep_alsasink_, "mute", &val, NULL);
++	} else {
++		g_object_get(player_, "mute", &val, NULL);
++	}
+ 	*m = val;
+ 	return 0;
+ }
+ static int output_gstreamer_set_mute(int m) {
+ 	Log_info("gstreamer", "Set mute to %s", m ? "on" : "off");
+-	g_object_set(player_, "mute", (gboolean) m, NULL);
++	if (beep_alsasink_ != NULL) {
++		g_object_set(beep_alsasink_, "mute", (gboolean) m, NULL);
++	} else {
++		g_object_set(player_, "mute", (gboolean) m, NULL);
++	}
+ 	return 0;
+ }
+ 
+@@ -949,6 +980,113 @@
+ 			play_trans_callback_(PLAY_STARTED_NEXT_STREAM);
+ 		}
+ 	}
++}
++
++/* Builds ``audiomixer ! audioconvert ! alsasink`` with a silent
++ * audiotestsrc wired into a second mixer input, and hands the mixer's
++ * remaining input to playbin as the bin's sink pad. Returns NULL when
++ * anything is missing, so the caller can fall back to a plain sink. */
++static GstElement *beep_sink_new(const char *sink_name, const char *device) {
++	GstElement *bin, *mix, *aconv, *sink, *tone, *tconv, *tres;
++	GstPad *pad, *peer, *ghost;
++
++	/* Only alsasink takes the device we know about. */
++	if (sink_name == NULL || strcmp(sink_name, "alsasink") != 0) {
++		return NULL;
++	}
++
++	bin   = gst_bin_new("gmr_beep_sink");
++	mix   = gst_element_factory_make("audiomixer", "gmr_mix");
++	aconv = gst_element_factory_make("audioconvert", "gmr_aconv");
++	sink  = gst_element_factory_make("alsasink", "gmr_alsasink");
++	tone  = gst_element_factory_make("audiotestsrc", "gmr_tone");
++	tconv = gst_element_factory_make("audioconvert", "gmr_tconv");
++	tres  = gst_element_factory_make("audioresample", "gmr_tres");
++	if (bin == NULL || mix == NULL || aconv == NULL || sink == NULL ||
++	    tone == NULL || tconv == NULL || tres == NULL) {
++		Log_info("gstreamer", "beep: audiomixer/audiotestsrc missing, "
++			 "continuing without the confirmation tone");
++		if (bin != NULL) {
++			gst_object_unref(bin);
++		}
++		return NULL;
++	}
++
++	if (device != NULL) {
++		g_object_set(sink, "device", device, NULL);
++	}
++	/* Silent until a volume change arrives. */
++	g_object_set(tone,
++		     "wave", 0,		/* sine */
++		     "freq", 880.0,
++		     "volume", 0.0,
++		     "is-live", TRUE,
++		     NULL);
++
++	gst_bin_add_many(GST_BIN(bin), mix, aconv, sink, tone, tconv, tres, NULL);
++	if (!gst_element_link_many(mix, aconv, sink, NULL) ||
++	    !gst_element_link_many(tone, tconv, tres, NULL)) {
++		Log_info("gstreamer", "beep: linking the mixer failed");
++		gst_object_unref(bin);
++		return NULL;
++	}
++
++	pad = gst_element_get_request_pad(mix, "sink_%u");
++	peer = gst_element_get_static_pad(tres, "src");
++	if (pad == NULL || peer == NULL ||
++	    gst_pad_link(peer, pad) != GST_PAD_LINK_OK) {
++		Log_info("gstreamer", "beep: wiring the tone into the mixer failed");
++		if (peer != NULL) {
++			gst_object_unref(peer);
++		}
++		if (pad != NULL) {
++			gst_object_unref(pad);
++		}
++		gst_object_unref(bin);
++		return NULL;
++	}
++	gst_object_unref(peer);
++	gst_object_unref(pad);
++
++	pad = gst_element_get_request_pad(mix, "sink_%u");
++	if (pad == NULL) {
++		gst_object_unref(bin);
++		return NULL;
++	}
++	ghost = gst_ghost_pad_new("sink", pad);
++	gst_object_unref(pad);
++	if (ghost == NULL || !gst_element_add_pad(bin, ghost)) {
++		Log_info("gstreamer", "beep: exposing the mixer sink failed");
++		gst_object_unref(bin);
++		return NULL;
++	}
++
++	beep_src_ = GST_ELEMENT(gst_object_ref(tone));
++	beep_alsasink_ = GST_ELEMENT(gst_object_ref(sink));
++	Log_info("gstreamer", "beep: confirmation tone enabled");
++	return bin;
++}
++
++static gboolean beep_off_cb(gpointer data) {
++	(void)data;
++	beep_off_timer_ = 0;
++	if (beep_src_ != NULL) {
++		g_object_set(beep_src_, "volume", 0.0, NULL);
++	}
++	return G_SOURCE_REMOVE;
++}
++
++void output_beep(int freq_hz, int duration_ms) {
++	if (beep_src_ == NULL) {
++		return;
++	}
++	if (beep_off_timer_ != 0) {
++		g_source_remove(beep_off_timer_);
++		beep_off_timer_ = 0;
++	}
++	g_object_set(beep_src_, "freq", (double) freq_hz,
++		     "volume", 0.5, NULL);
++	beep_off_timer_ = g_timeout_add(duration_ms, beep_off_cb, NULL);
+ }
+ 
+ static int output_gstreamer_init(void)
+@@ -1004,12 +1142,18 @@
+ 		GstElement *sink = NULL;
+ 		Log_info("gstreamer", "Setting audio sink to %s; device=%s\n",
+ 			 audio_sink, audio_device ? audio_device : "");
+-		sink = gst_element_factory_make (audio_sink, "sink");
++		/* Prefer the mixing variant so volume changes can be confirmed
++		 * by ear; fall back to the plain sink when it cannot be built. */
++		sink = beep_sink_new(audio_sink, audio_device);
++		if (sink == NULL) {
++		  sink = gst_element_factory_make (audio_sink, "sink");
++		}
+ 		if (sink == NULL) {
+ 		  Log_error("gstreamer", "Couldn't create sink '%s'",
+ 			    audio_sink);
+ 		} else {
+-		  if (audio_device != NULL) {
++		  /* The mixing bin already configured the device. */
++		  if (beep_alsasink_ == NULL && audio_device != NULL) {
+ 		    g_object_set (G_OBJECT(sink), "device", audio_device, NULL);
+ 		  }
+ 		  g_object_set (G_OBJECT (player_), "audio-sink", sink, NULL);
+--- a/src/upnp_transport.h
++++ b/src/upnp_transport.h
+@@ -37,4 +37,8 @@
+ void upnp_transport_register_variable_listener(variable_change_listener_t cb,
+ 						       void *userdata);
+ 
++/* Non-zero while audio is actually flowing, so callers can avoid making
++ * noise when the renderer is merely idle. */
++int upnp_transport_is_playing(void);
++
+ #endif /* _UPNP_TRANSPORT_H */
+--- a/src/upnp_transport.c
++++ b/src/upnp_transport.c
+@@ -461,6 +461,10 @@
+ 	return 0;
+ }
+ 
++int upnp_transport_is_playing(void) {
++	return transport_state_ == TRANSPORT_PLAYING;
++}
++
+ // Replace given variable without sending an state-change event.
+ static int replace_var(transport_variable_t varnum, const char *new_value) {
+ 	return VariableContainer_change(state_variables_, varnum, new_value);
+--- a/src/upnp_control.c
++++ b/src/upnp_control.c
+@@ -45,6 +45,7 @@
+ #include "upnp_service.h"
+ #include "upnp_device.h"
+ #include "output.h"
++#include "upnp_transport.h"
+ #include "xmlescape.h"
+ #include "variable-container.h"
+ 
+@@ -435,10 +436,38 @@
+ 
+ static void volume_state_save(int level);
+ 
++/* A volume-key press sends one SetVolume, a slider drag sends a burst of
++ * them. Waiting for the value to settle turns that into one beep instead
++ * of a machine gun. */
++#define VOLUME_BEEP_IDLE_MS 400
++
++static guint volume_beep_timer_ = 0;
++static int volume_beep_level_ = -1;
++
++static gboolean volume_beep_fire(gpointer data) {
++	(void)data;
++	volume_beep_timer_ = 0;
++	if (!upnp_transport_is_playing()) {
++		return G_SOURCE_REMOVE;
++	}
++	/* Full scale gets a distinctly higher tone, so "max" is audible
++	 * without looking at the phone. */
++	output_beep(volume_beep_level_ >= 100 ? 1320 : 880, 70);
++	return G_SOURCE_REMOVE;
++}
++
+ static void change_volume(const char *volume, const char *db_volume) {
+ 	replace_var(CONTROL_VAR_VOLUME, volume);
+ 	replace_var(CONTROL_VAR_VOLUME_DB, db_volume);
+ 	volume_state_save(atoi(volume));
++
++	volume_beep_level_ = atoi(volume);
++	if (volume_beep_timer_ != 0) {
++		g_source_remove(volume_beep_timer_);
++		volume_beep_timer_ = 0;
++	}
++	volume_beep_timer_ = g_timeout_add(VOLUME_BEEP_IDLE_MS,
++					   volume_beep_fire, NULL);
+ }
+ 
+ static int cmd_obtain_variable(struct action_event *event,

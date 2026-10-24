@@ -1,6 +1,6 @@
 # 未来计划
 
-> 记录于 2026-10-22，更新于 2026-10-23。当前版本 **1.1.4**（1.0.0 稳定运行；1.0.1 修中文设备名；1.1.0 网页设置界面；1.1.1 播放控制 + 桌面入口；1.1.2 去重复页头 + 修窗口图标；1.1.3 补安装依赖；1.1.4 修入口配置），**暂无必须做的事**，以下按优先级排列，做到哪算哪。
+> 记录于 2026-10-22，更新于 2026-10-24。当前版本 **1.1.6**（1.0.0 稳定运行；1.0.1 修中文设备名；1.1.0 网页设置界面；1.1.1 播放控制 + 桌面入口；1.1.2 去重复页头 + 修窗口图标；1.1.3 补安装依赖；1.1.4 修入口配置；1.1.5 修播完不释放声卡；1.1.6 音量确认音），**暂无必须做的事**，以下按优先级排列，做到哪算哪。
 > 应用化设计的完整方案见 [`docs/app-console-plan.md`](app-console-plan.md)。
 
 ## P0 · 待验证（决定后续路线，30 分钟）
@@ -97,6 +97,38 @@
       页头那套 logo + h1 + 副标题整体删掉，运行状态徽标挪到「设备设置」标题行右侧。
 - [x] **应用中心库里补登记**：列表存在 **postgres `appcenter` 库**（`app_service` / `app_open` / `app_poster`），不是扫目录；手工铺文件不会自动写库。重启 `trim_app_center` 会把**所有应用**重启一遍（约 20 秒）
 
+
+## P2 · 音量确认音（v1.1.6，2026-10-24）
+
+投屏时**手机端看不到渲染器的实际音量**（网易云投屏页不回读远端音量），手机上按音量键之后
+「到底调到多少」完全没反馈。所以让渲染器在音量变化时「滴」一声，满档用更高的音。
+
+**为什么不能简单地 `system("aplay ...")`**：播放中 `plughw:CARD=PCH,DEV=0` 被 GStreamer 的
+alsasink 独占，外部 `aplay` 一律 `Device or resource busy`（1.1.5 那轮实测过）。而且
+`/proc/asound/pcm` 只有 **1 路 playback**（`00-00: ALC887-VD Analog : playback 1`），
+没有多余的 subdevice 可以另开一路。**唯一的出路是在同一个 sink 内部混音。**
+
+**实现要点**（`patches/0004-volume-beep.patch`）
+
+- sink 改成自定义 bin：`audiomixer ! audioconvert ! alsasink`，`audiotestsrc` 经
+  `audioconvert ! audioresample` 接到 mixer 的第二路，mixer 剩下的那路 ghost 成 bin 的 `sink`
+  pad 给 playbin 用。构造失败一律回退到裸 ausink（返回 NULL 走原路径），保证不会因为缺插件起不来。
+- **`audiotestsrc` 常驻 PLAYING、`volume=0`**，响的时候把 volume 抬到 0.5、70ms 后归零。
+  让它常驻是为了 mixer 的 pad 一直处于协商好的状态；临时 PAUSED 会牵扯 renegotiation。
+- ⚠️ **换成自定义 sink bin 后 `playbin` 的 `volume` / `mute` 属性失效**（GstStreamVolume 传不进 bin）。
+  必须把 set/get volume、set/get mute 全部改到 `alsasink` 上，否则**音量控制整体失灵**。
+  好处是歪打正着：混音在 alsasink 之前，增益作用在整个混合信号上，**滴声天然跟随主音量**。
+  用 `beep_alsasink_` 是否为空做分支，裸 sink 时仍走 playbin。
+- 触发点挂在 `upnp_control.c` 的 `change_volume()`（和 `volume_state_save()` 同一处）。
+  **防抖 400ms**：网易云一次按键发一个 SetVolume、拖动则是连发（抓包实测峰值 19 req/s），
+  不防抖就是机关枪。防抖窗口内只保留最后一次的值。
+- **只在播放中响**：`upnp_transport_is_playing()` 是新加的（直接读 `upnp_transport.c` 里的
+  `transport_state_`，比翻变量容器干净）。STOPPED 时调音量不响。
+- 音色：普通档 880Hz、满档（>=100）1320Hz，各 70ms。
+
+**已知取舍**：滴声跟随主音量 → 音量很低时它也几乎听不见（用户明确选了这个，简单优先）。
+真要在小音量下也清楚，得让提示音绕开 alsasink 增益，那就得在 mixer 之后单独引一路，
+复杂度和收益不成比例。
 
 ## 安装依赖（v1.1.3 修）
 

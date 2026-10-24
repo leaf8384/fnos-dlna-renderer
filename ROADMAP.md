@@ -142,7 +142,7 @@ Restarting playbin (wrong-state) ...
 
 **实现要点**（`patches/0004-volume-beep.patch`，已按上述方案重写）
 
-- `output_beep(freq, duration_ms, level_pct)` 起一个 detached `GThread`，线程里建管线、
+- `output_beep(freq, duration_ms, music_gain)` 起一个 detached `GThread`，线程里建管线、
   PLAYING、等 EOS/ERROR（超时 `duration+1500ms` 兜底防线程泄漏）、等 200ms 让 dmix 把尾巴
   推完、再 `GST_STATE_NULL` 关掉句柄。**绝不能在主循环里同步做**——网易云 `GetPositionInfo`
   峰值 19 req/s（约 51ms 一次），阻塞 70ms 会直接丢响应。
@@ -157,15 +157,40 @@ Restarting playbin (wrong-state) ...
   警告然后什么都不做——**静默失效**，采样率交给下游协商。而下游是 dmix 时很可能协商成 48k，
   上面那条「整周期」的算法就错位了（会爆音），时长也不对。1.1.7 第一次发版就栽在这里，
   用 `gst-inspect-1.0 audiotestsrc | grep '^  caps'` 一查就露。
-- **跟随主音量**：`playbin` 的 volume 是线性增益，所以提示音也走线性
-  `volume = 0.5 * level_pct / 100`，相对音乐保持固定比例。
+- **跟随主音量**：`playbin` 的音量是 **dB 曲线**，不是线性百分比——`level 50` 的增益是
+  `10^(-20/20) = 0.1`，不是 0.5（映射 0→-60dB / 50→-20dB / 100→0dB）。
+  所以提示音拿的是 `volume_level_gain(level)` 这个**同一个线性增益**，再乘 0.5，
+  这样它在任何音量下都稳定地低于音乐 6dB。按线性百分比算会让小音量下的滴声偏响。
+- **ducking（音乐让路）**：滴声只有 70ms，音量调大时会被音乐盖住。响之前把音乐压到
+  `VOLUME_DUCK_PCT=30%`，200ms 后（`VOLUME_DUCK_MS`）再抬回目标增益。
+  新的 SetVolume 到来时立刻取消待执行的「抬回」——调用方紧接着就会写新音量，
+  留着反而会把旧值写回去。压/抬都直接锁 `control_mutex`（**不是** `service_lock()`：
+  那个还会开一次 UPnP LastChange 收集，会冒出假的变量变更事件）。
 - 触发点仍在 `upnp_control.c` 的 `change_volume()`，**防抖 400ms**：一次按键发一个 SetVolume、
   拖动则连发，不防抖就是机关枪。
 - **只在播放中响**：`upnp_transport_is_playing()`（新加，直接读 `transport_state_`）。
   另外 `output_get_mute()` 为真时也不响——静音了还滴一声很怪。
 
-**代价**：主路多走一层 ALSA 软件混音，44.1k 源被重采样到 48k（dmix 默认格式）。这台 aux 音箱
-听不出来，接受。
+**音质：dmix 的采样率必须钉在 44100**
+
+ALSA 内置的 `dmix` 默认 `defaults.pcm.dmix.rate = 48000`
+（`/usr/share/alsa/alsa.conf:118`），实测 `plug:dmix` 的硬件参数是 **48000 / S32_LE**，
+而基线 `plughw:CARD=PCH,DEV=0` 是 **44100 / S16_LE** —— 也就是白插了一次重采样。
+所以 `cmd/install_init` 会往 `/etc/asound.conf` 写一段带标记的 `pcm.!dmix` 覆盖：
+
+```
+pcm.!dmix { type dmix
+    slave { pcm "hw:CARD=PCH,DEV=0"; format S32_LE; rate 44100
+            channels 2; period_size 1024; buffer_size 8192 } }
+```
+
+- 有一条 `pcm.!dmix` 之后实测硬件参数变成 **44100 / S32_LE**，**不再重采样**。
+- 格式用 `S32_LE` 而不是 `S16_LE`：dmix 要把音乐和滴声相加，16bit 相加会削顶；
+  32bit 有 16bit 余量。源本身是 16bit，升到 32bit 是精确左移，**无损**。
+- 48k 源（个别音源）照样能放，此时才发生一次 48k→44.1k 转换；本机音源基本都是 44.1k。
+- 幂等：按 `# >>> dlna-renderer: shared dmix at 44.1 kHz >>>` 标记判断，
+  已有别人的 `dmix` 定义时不覆盖、只记日志。
+- **卸载不会删这个文件**（和 apt 包一样不回滚），留着也无害：别的程序不用 dmix。
 
 **配置迁移**：`cmd/main` 的 `detect_audiodev()` 优先返回 `plug:dmix`；`load_conf()` 里
 `migrate_audiodev()` 把旧值（仅限旧版自动探测出来的那一坨 `plughw:CARD=<第一块卡>,DEV=0` /

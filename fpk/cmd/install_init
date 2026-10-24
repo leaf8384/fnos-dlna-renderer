@@ -46,6 +46,47 @@ else
 	log "依赖已满足"
 fi
 
+# ---- 共享混音设备 -----------------------------------------------------
+# 为什么要 dmix：手机调音量的提示音要和音乐同时出声，而 plughw 是独占的，
+# 第二路打开会被 Device or resource busy 拒掉。
+# 为什么必须自己定义：ALSA 内置的 dmix 默认 defaults.pcm.dmix.rate = 48000
+# （/usr/share/alsa/alsa.conf），44.1k 的音乐会平白多一次重采样。这里把它钉在
+# 44100，硬件直接吃源采样率。格式用 S32_LE —— dmix 要把音乐和滴声相加，
+# 16bit 相加会削顶；源本身是 16bit，升 32bit 是精确左移，无损。
+ASOUND=/etc/asound.conf
+BEGIN_MARK="# >>> dlna-renderer: shared dmix at 44.1 kHz >>>"
+END_MARK="# <<< dlna-renderer <<<"
+CARDNAME=$(aplay -l 2>/dev/null | sed -n 's/^card [0-9]*: \([^ ]*\) \[.*/\1/p' | head -1)
+
+if grep -qF "$BEGIN_MARK" "$ASOUND" 2>/dev/null; then
+	log "共享混音设备已配置，跳过"
+elif [ -f "$ASOUND" ] && grep -qE 'pcm\.!?dmix' "$ASOUND" 2>/dev/null; then
+	log "$ASOUND 里已经有别人的 dmix 定义，不覆盖（提示音可能仍然可用，但采样率不受控）"
+else
+	{
+		echo ""
+		echo "$BEGIN_MARK"
+		cat <<EOF
+# dmix 钉在 44100：硬件直接收源采样率，不做重采样。
+pcm.!dmix {
+    type dmix
+    ipc_key 20251024
+    ipc_key_add_uid false
+    slave {
+        pcm "hw:CARD=${CARDNAME:-PCH},DEV=0"
+        format S32_LE
+        rate 44100
+        channels 2
+        period_size 1024
+        buffer_size 8192
+    }
+}
+EOF
+		echo "$END_MARK"
+	} >>"$ASOUND"
+	log "已写入 $ASOUND（dmix @ 44100，声卡=${CARDNAME:-PCH}）"
+fi
+
 # ---- 默认配置 ---------------------------------------------------------
 if [ ! -f "$CONF" ]; then
 	IFACE=$(ip -4 route show default 2>/dev/null |

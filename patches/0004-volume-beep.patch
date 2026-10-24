@@ -1,13 +1,14 @@
 --- a/src/output.h
 +++ b/src/output.h
-@@ -59,4 +59,9 @@
+@@ -59,4 +59,10 @@
  int output_get_mute(int *m);
  int output_set_mute(int m);
  
 +/* Play a short confirmation tone, mixed with whatever is currently
-+ * playing. level_pct is the volume the user just picked (0..100) so the
-+ * tone follows it; the call itself does not block. */
-+void output_beep(int freq_hz, int duration_ms, int level_pct);
++ * playing. music_gain is the linear gain the music is playing at right
++ * now (the same number given to output_set_volume); the tone is rendered
++ * at a fixed fraction of it so it follows the volume. Does not block. */
++void output_beep(int freq_hz, int duration_ms, float music_gain);
 +
  #endif /* _OUTPUT_H */
 --- a/src/output_gstreamer.c
@@ -20,7 +21,7 @@
  #include "output_gstreamer.h"
  
  static double buffer_duration = 0.0; /* Buffer disbled by default, see #182 */
-@@ -951,6 +952,183 @@
+@@ -951,6 +952,186 @@
  	}
  }
  
@@ -182,19 +183,22 @@
 +	return NULL;
 +}
 +
-+void output_beep(int freq_hz, int duration_ms, int level_pct) {
++void output_beep(int freq_hz, int duration_ms, float music_gain) {
 +	beep_job *job;
 +	GThread *thread;
++	double gain;
 +
-+	if (level_pct <= 0) {
-+		return;		/* muted by definition; stay quiet */
++	if (music_gain <= 0.0f) {
++		return;		/* silent by definition; stay quiet */
++	}
++	gain = 0.5 * (double) music_gain;
++	if (gain > 0.5) {
++		gain = 0.5;
 +	}
 +	job = g_new0(beep_job, 1);
 +	job->freq = (double) freq_hz;
 +	job->duration_ms = duration_ms;
-+	/* Linear, like playbin's own volume, so the tone sits at a constant
-+	 * offset below the music instead of vanishing at mid volume. */
-+	job->volume = 0.5 * (double) level_pct / 100.0;
++	job->volume = gain;
 +
 +	/* Detached: a volume-key burst must never stall the UPnP thread. */
 +	thread = g_thread_new("gmr-beep", beep_thread, job);
@@ -238,17 +242,46 @@
  #include "xmlescape.h"
  #include "variable-container.h"
  
-@@ -435,10 +436,46 @@
+@@ -434,11 +435,92 @@
+ }
  
  static void volume_state_save(int level);
- 
++/* defined further down; the confirmation tone needs the same dB curve the
++ * music is played at */
++static float volume_level_to_decibel(int volume);
++
 +/* A volume-key press sends one SetVolume, a slider drag sends a burst of
 + * them. Waiting for the value to settle turns that into one beep instead
 + * of a machine gun. */
 +#define VOLUME_BEEP_IDLE_MS 400
++/* The tone is 70ms long and the music is right next to it, so at anything
++ * but low volume the music simply buries it. Pull the music down to a
++ * third for the duration, then put it back (ducking). */
++#define VOLUME_DUCK_PCT 30
++#define VOLUME_DUCK_MS  200
 +
 +static guint volume_beep_timer_ = 0;
++static guint volume_duck_timer_ = 0;
 +static int volume_beep_level_ = -1;
++static double volume_beep_gain_ = 1.0;
++
++/* The very same linear gain the music is played at: level 100 -> 1.0,
++ * level 50 -> 0.1 (that is -20dB, the scale playbin uses), level 0 ->
++ * 0.001. Rendering the tone at a fixed ratio of it keeps the tone the
++ * same distance below the music at every volume, instead of blasting
++ * through at a constant level. */
++static double volume_level_gain(int level) {
++	return exp(volume_level_to_decibel(level) / 20 * log(10));
++}
++
++static gboolean volume_unduck(gpointer data) {
++	(void)data;
++	volume_duck_timer_ = 0;
++	pthread_mutex_lock(&control_mutex);
++	output_set_volume(volume_beep_gain_);
++	pthread_mutex_unlock(&control_mutex);
++	return G_SOURCE_REMOVE;
++}
 +
 +static gboolean volume_beep_fire(gpointer data) {
 +	int muted = 0;
@@ -259,23 +292,40 @@
 +	if (!upnp_transport_is_playing()) {
 +		return G_SOURCE_REMOVE;
 +	}
++	/* Not service_lock(): that one also brackets a UPnP LastChange
++	 * collection, and we are not changing any variable here. */
++	pthread_mutex_lock(&control_mutex);
 +	output_get_mute(&muted);
-+	if (muted) {
-+		return G_SOURCE_REMOVE;
++	if (!muted) {
++		/* Music out of the way first. */
++		output_set_volume(volume_beep_gain_ * VOLUME_DUCK_PCT / 100.0);
++		if (volume_duck_timer_ != 0) {
++			g_source_remove(volume_duck_timer_);
++		}
++		volume_duck_timer_ = g_timeout_add(VOLUME_DUCK_MS,
++						   volume_unduck, NULL);
++		/* Full scale gets a distinctly higher tone, so "max" is
++		 * audible without looking at the phone. */
++		output_beep(volume_beep_level_ >= 100 ? 1764 : 882, 70,
++			    volume_beep_gain_);
 +	}
-+	/* Full scale gets a distinctly higher tone, so "max" is audible
-+	 * without looking at the phone. */
-+	output_beep(volume_beep_level_ >= 100 ? 1764 : 882, 70,
-+		    volume_beep_level_);
++	pthread_mutex_unlock(&control_mutex);
 +	return G_SOURCE_REMOVE;
 +}
-+
+ 
  static void change_volume(const char *volume, const char *db_volume) {
  	replace_var(CONTROL_VAR_VOLUME, volume);
  	replace_var(CONTROL_VAR_VOLUME_DB, db_volume);
  	volume_state_save(atoi(volume));
 +
 +	volume_beep_level_ = atoi(volume);
++	volume_beep_gain_ = volume_level_gain(volume_beep_level_);
++	/* A new value while the music is still ducked: the caller is about
++	 * to set the real volume anyway, so just drop the pending restore. */
++	if (volume_duck_timer_ != 0) {
++		g_source_remove(volume_duck_timer_);
++		volume_duck_timer_ = 0;
++	}
 +	if (volume_beep_timer_ != 0) {
 +		g_source_remove(volume_beep_timer_);
 +		volume_beep_timer_ = 0;

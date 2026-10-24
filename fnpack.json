@@ -24,14 +24,14 @@
       "service_port": "8790",
       "releases": {
         "1.1.7": {
-          "changelog": "修 1.1.6 放不出声的问题：提示音改成自己走一条独立管线，靠 ALSA 软件混音和音乐同时输出，播放管线一行没动。输出设备默认从独占的 plughw 改成 plug:dmix，老配置启动时自动迁移；设置页声卡列表第一项就是它。",
+          "changelog": "修 1.1.6 放不出声的问题：提示音改成自己走一条独立管线，靠 ALSA 软件混音和音乐同时输出，播放管线一行没动。响之前先把音乐压低到三成，响完抬回来，免得被音乐盖住。输出设备改成 plug:dmix（老配置自动迁移），采样率固定 44100，不再重采样，音质不变。",
           "updated_at": "2026-10-24T21:10:00+08:00",
           "os_min_version": "1.0.0",
           "packages": {
             "x86": {
-              "download_url": "https://github.com/leaf8384/fnos-dlna-renderer/releases/download/v1.1.7/dlna-renderer_v1.1.7_x86.fpk",
-              "sha256": "4c928a193a63df3ae55aeb7a4ab302e0325631147661af10fe55b8ea032a54f0",
-              "size": 2837531
+              "download_url": "",
+              "sha256": "",
+              "size": 0
             }
           }
         },

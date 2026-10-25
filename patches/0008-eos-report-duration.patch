@@ -1,0 +1,22 @@
+--- a/src/output_gstreamer.c
++++ b/src/output_gstreamer.c
+@@ -727,6 +727,19 @@
+ 			 * READY (rather than NULL) keeps the pipeline alive, so the
+ 			 * next SetAVTransportURI only has to go back to PLAYING. */
+ 			gst_element_set_state(player_, GST_STATE_READY);
++			/* Report the track as fully played. A DLNA controller
++			 * decides "this track ended, cue the next one" by comparing
++			 * RelTime against TrackDuration. The last sampled position
++			 * is always a little short of the end (EOS arrives between
++			 * two polls), and once playback stops that cached value
++			 * never moves again -- so the controller waits forever for
++			 * a second that never comes and never advances. NetEase in
++			 * the background polls GetPositionInfo for exactly this and
++			 * was stuck at 0:03:51 against a 0:03:52 track. */
++			if (last_known_time_.duration > 0 &&
++			    last_known_time_.position < last_known_time_.duration) {
++				last_known_time_.position = last_known_time_.duration;
++			}
+ 			if (play_trans_callback_) {
+ 				play_trans_callback_(PLAY_STOPPED);
+ 			}

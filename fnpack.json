@@ -29,9 +29,9 @@
           "os_min_version": "1.0.0",
           "packages": {
             "x86": {
-              "download_url": "",
-              "sha256": "",
-              "size": 0
+              "download_url": "https://github.com/leaf8384/fnos-dlna-renderer/releases/download/v1.1.13/dlna-renderer_v1.1.13_x86.fpk",
+              "sha256": "9b11b8994cb8fa45f214fa71f101ca8e550f9fcab105da5bdb2950fdc36fd246",
+              "size": 2855414
             }
           }
         },
